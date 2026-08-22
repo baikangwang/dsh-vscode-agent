@@ -1,0 +1,119 @@
+{
+  "name": "dsh-vscode-agent",
+  "displayName": "DSH Panel",
+  "description": "DeepSeek Harness 右侧边栏面板：启动/复用 dsh web 并内嵌其 Web UI",
+  "version": "0.1.0",
+  "publisher": "dsh-vscode-agent",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.99.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onView:dsh.panel",
+    "onCommand:dsh.open",
+    "onCommand:dsh.restart",
+    "onCommand:dsh.stop",
+    "onCommand:dsh.openInBrowser",
+    "onCommand:dsh.updateRuntime"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "auxiliarybar": [
+        {
+          "id": "dsh.viewContainer",
+          "title": "DSH",
+          "icon": "media/dsh.svg"
+        }
+      ]
+    },
+    "views": {
+      "dsh.viewContainer": [
+        {
+          "type": "webview",
+          "id": "dsh.panel",
+          "name": "DSH"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "dsh.open",
+        "title": "DSH: Open Panel"
+      },
+      {
+        "command": "dsh.restart",
+        "title": "DSH: Restart Runtime"
+      },
+      {
+        "command": "dsh.stop",
+        "title": "DSH: Stop Runtime"
+      },
+      {
+        "command": "dsh.openInBrowser",
+        "title": "DSH: Open in Browser"
+      },
+      {
+        "command": "dsh.updateRuntime",
+        "title": "DSH: Update Runtime"
+      }
+    ],
+    "configuration": {
+      "title": "DSH",
+      "properties": {
+        "dsh.port": {
+          "type": "number",
+          "default": 3080,
+          "description": "dsh web 监听端口（0 = OS 分配；被非 DSH 程序占用时自动回落随机端口）。固定端口可被其他消费者（如浏览器 dsh web）复用，但扩展先启动会占用它。"
+        },
+        "dsh.channel": {
+          "type": "string",
+          "default": "latest",
+          "enum": [
+            "latest",
+            "preview"
+          ],
+          "description": "dsh 运行时版本通道；每次启动自动检查并更新，离线时回退 npx 缓存。"
+        },
+        "dsh.command": {
+          "type": "string",
+          "default": "",
+          "description": "自定义 dsh 启动命令（留空自动解析：npx @deepseek-ai/dsh）。示例：dsh web --port 3080。",
+          "markdownDescription": "自定义 dsh 启动命令（留空自动解析：`npx @deepseek-ai/dsh`）。示例：`dsh web --port 3080`。"
+        },
+        "dsh.autoStart": {
+          "type": "boolean",
+          "default": true,
+          "description": "VSCode 启动时自动启动（第一窗口）或复用（后续窗口）dsh。"
+        },
+        "dsh.autoOpenPanel": {
+          "type": "boolean",
+          "default": true,
+          "description": "启动后自动展开右侧边栏并显示 DSH 面板。"
+        },
+        "dsh.dshHome": {
+          "type": "string",
+          "default": "",
+          "description": "DSH_HOME 目录（留空 = dsh 默认 ~/.dsh，与浏览器版共享会话）。"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "tsc -p ./",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/vscode": "^1.99.0",
+    "@vscode/vsce": "^3.2.0",
+    "typescript": "^5.6.0"
+  }
+}
