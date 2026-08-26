@@ -2,12 +2,12 @@
   "name": "dsh-vscode-agent",
   "displayName": "DSH Panel",
   "description": "DeepSeek Harness 右侧边栏面板：启动/复用 dsh web 并内嵌其 Web UI",
-  "version": "0.1.0",
+  "version": "0.1.3",
   "publisher": "dsh-vscode-agent",
   "private": true,
   "license": "MIT",
   "engines": {
-    "vscode": "^1.99.0"
+    "vscode": "^1.134.0"
   },
   "categories": [
     "Other"
@@ -24,16 +24,16 @@
   "main": "./out/extension.js",
   "contributes": {
     "viewsContainers": {
-      "auxiliarybar": [
+      "secondarySidebar": [
         {
-          "id": "dsh.viewContainer",
+          "id": "dsh-viewContainer",
           "title": "DSH",
           "icon": "media/dsh.svg"
         }
       ]
     },
     "views": {
-      "dsh.viewContainer": [
+      "dsh-viewContainer": [
         {
           "type": "webview",
           "id": "dsh.panel",

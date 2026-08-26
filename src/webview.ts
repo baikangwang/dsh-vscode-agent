@@ -5,10 +5,9 @@ import { DshRuntime, RuntimeState } from './runtime'
 
 const VIEW_ID = 'dsh.panel'
 
-function nonce(): string {
-  const b = Buffer.alloc(16)
-  for (let i = 0; i < 16; i++) b[i] = Math.floor(Math.random() * 256)
-  return b.toString('hex')
+/** Messages the webview page sends to the extension host. */
+type WebviewMessage = {
+  type: 'webviewReady' | 'reload' | 'openBrowser' | 'restart' | 'stop'
 }
 
 export class DshPanel implements vscode.WebviewViewProvider {
@@ -28,8 +27,14 @@ export class DshPanel implements vscode.WebviewViewProvider {
       localResourceRoots: [],
     }
     webviewView.webview.html = this.html(webviewView.webview)
-    webviewView.webview.onDidReceiveMessage((msg) => {
+    webviewView.webview.onDidReceiveMessage((msg: WebviewMessage) => {
       switch (msg.type) {
+        case 'webviewReady':
+          // Handshake: the page has attached its listener; unconditionally
+          // re-push the current state snapshot (covers the boot race where
+          // earlier messages were dropped before the listener was live).
+          this.refresh()
+          break
         case 'reload':
           void vscode.commands.executeCommand('dsh.restart')
           break
@@ -42,6 +47,15 @@ export class DshPanel implements vscode.WebviewViewProvider {
         case 'stop':
           void vscode.commands.executeCommand('dsh.stop')
           break
+      }
+    })
+    webviewView.onDidDispose(() => {
+      // Only drop the reference for the exact instance being disposed so a
+      // freshly recreated view is not suppressed, and clear lastUrl so setUrl
+      // is not blocked after a rebuild.
+      if (this.view === webviewView) {
+        this.view = null
+        this.lastUrl = null
       }
     })
     this.refresh()
@@ -63,16 +77,14 @@ export class DshPanel implements vscode.WebviewViewProvider {
   }
 
   private html(wv: vscode.Webview): string {
-    const csp = wv.cspSource
-    const n = nonce()
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta http-equiv="Content-Security-Policy" content="
   default-src 'none';
-  style-src ${csp};
-  script-src 'nonce-${n}';
+  style-src 'unsafe-inline';
+  script-src 'unsafe-inline';
   frame-src http://127.0.0.1:*;
 ">
 <style>
@@ -104,12 +116,19 @@ export class DshPanel implements vscode.WebviewViewProvider {
     <div id="overlay">initializing…</div>
     <iframe id="frame" sandbox="allow-scripts allow-forms allow-same-origin allow-downloads"></iframe>
   </div>
-<script nonce="${n}">
+<script>
 (function () {
+  var stateEl = document.getElementById('state');
+  var overlayEl = document.getElementById('overlay');
+  var frameEl = document.getElementById('frame');
+  if (typeof acquireVsCodeApi !== 'function') {
+    // Diagnostics: VSCode's injected API script was blocked (CSP) — without it
+    // no state message can ever arrive and the overlay stays at 'initializing…'.
+    if (stateEl) stateEl.textContent = 'webview API unavailable';
+    if (overlayEl) overlayEl.textContent = 'Webview API 不可用（acquireVsCodeApi 未定义）。\n\n请反馈此信息给开发方；并检查 VSCode 扩展宿主日志中本 webview 的 CSP 报错。';
+    return;
+  }
   const vscode = acquireVsCodeApi();
-  const stateEl = document.getElementById('state');
-  const overlayEl = document.getElementById('overlay');
-  const frameEl = document.getElementById('frame');
   function setUrl(url) {
     if (frameEl.src === url) return;
     frameEl.src = url;
@@ -135,6 +154,10 @@ export class DshPanel implements vscode.WebviewViewProvider {
   document.getElementById('btn-open').addEventListener('click', () => vscode.postMessage({ type: 'openBrowser' }));
   document.getElementById('btn-restart').addEventListener('click', () => vscode.postMessage({ type: 'restart' }));
   document.getElementById('btn-stop').addEventListener('click', () => vscode.postMessage({ type: 'stop' }));
+  // Handshake: all listeners and button handlers are registered, so any state
+  // snapshot pushed now will be received. Ask the extension host to re-push the
+  // current state (covers messages dropped during the boot window).
+  vscode.postMessage({ type: 'webviewReady' });
 })();
 </script>
 </body>
