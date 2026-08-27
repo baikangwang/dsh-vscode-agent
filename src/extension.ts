@@ -15,6 +15,7 @@ interface Cfg {
   autoStart: boolean
   autoOpenPanel: boolean
   dshHome: string
+  probeIntervalSec: number
 }
 
 function readConfig(): Cfg {
@@ -26,6 +27,7 @@ function readConfig(): Cfg {
     autoStart: c.get<boolean>('autoStart', true),
     autoOpenPanel: c.get<boolean>('autoOpenPanel', true),
     dshHome: c.get<string>('dshHome', ''),
+    probeIntervalSec: c.get<number>('probeIntervalSec', 30),
   }
 }
 
@@ -40,6 +42,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     channel: cfg.channel,
     command: cfg.command,
     dshHome: cfg.dshHome,
+    probeIntervalSec: cfg.probeIntervalSec,
   })
 
   // Status bar
@@ -51,7 +54,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     switch (runtime.state) {
       case 'ready':
         statusItem.text = `$(circle-filled) DSH ${runtime.port ?? ''}`
-        statusItem.tooltip = `dsh web · ${runtime.url}\n日志：${logFile()}`
+        statusItem.tooltip = `dsh web · ${runtime.url}\n日志：${logFile()}\n(${runtime.managedBy ?? 'unknown'}：stop/restart 不关停 dsh)`
         statusItem.show()
         break
       case 'starting':
@@ -83,11 +86,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       await openPanel()
     }),
     vscode.commands.registerCommand('dsh.restart', async () => {
-      await runtime?.restart()
+      // Reconnect semantics (P0-D): never kills dsh; re-discover/adopt/launch.
+      await runtime?.reconnect()
       await openPanel()
     }),
     vscode.commands.registerCommand('dsh.stop', async () => {
-      runtime?.stopManaged()
+      // Disconnect semantics (P0-D): detach without killing dsh.
+      runtime?.disconnect()
     }),
     vscode.commands.registerCommand('dsh.openInBrowser', async () => {
       const url = runtime?.url
@@ -95,12 +100,26 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       else void vscode.window.showWarningMessage('DSH 尚未就绪')
     }),
     vscode.commands.registerCommand('dsh.updateRuntime', async () => {
-      const pick = await vscode.window.showInformationMessage(
-        '重启 dsh 以获取最新版本（npx 将在启动时解析 latest）。继续？',
-        { modal: true },
-        '重启',
+      // F-UPDATE (ADR-10): explicit force-relaunch EXCEPTION — only for a
+      // managed-own dsh, after explicit user confirmation. Independent code
+      // path; does NOT reuse dsh.restart (reconnect can't update the version).
+      const mb = runtime?.managedBy
+      if (mb === 'managed-own' && runtime) {
+        const pick = await vscode.window.showInformationMessage(
+          '受控重拉 managed dsh 以获取 npx latest（将结束当前 dsh 并按最新版本重新启动）。继续？',
+          { modal: true },
+          '升级并重拉',
+        )
+        if (pick === '升级并重拉') {
+          await runtime.forceRelaunchManaged()
+          await openPanel()
+        }
+        return
+      }
+      const sep = mb === null ? '' : `（当前 dsh 为 ${mb}）`
+      void vscode.window.showWarningMessage(
+        '外部/已接管 dsh 无法自动升级。请手动运行 `npx @deepseek-ai/dsh@latest web` 或受控重拉。' + sep,
       )
-      if (pick === '重启') await vscode.commands.executeCommand('dsh.restart')
     }),
   )
 

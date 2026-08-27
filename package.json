@@ -2,7 +2,7 @@
   "name": "dsh-vscode-agent",
   "displayName": "DSH Panel",
   "description": "DeepSeek Harness 右侧边栏面板：启动/复用 dsh web 并内嵌其 Web UI",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "publisher": "dsh-vscode-agent",
   "private": true,
   "license": "MIT",
@@ -100,6 +100,11 @@
           "type": "string",
           "default": "",
           "description": "DSH_HOME 目录（留空 = dsh 默认 ~/.dsh，与浏览器版共享会话）。"
+        },
+        "dsh.probeIntervalSec": {
+          "type": "number",
+          "default": 30,
+          "description": "detached dsh 的存活探活周期（秒；0 = 关闭探活）。dsh 为独立常驻进程，扩展不再监听其 exit，改由周期性 __DSH_BOOT__ 探活判定其生死并（在本窗连接中）受退避上限约束地重拉。"
         }
       }
     }

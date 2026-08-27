@@ -4,15 +4,20 @@
 // Pure Node (no vscode dependency) so it can be exercised headlessly.
 import * as fs from 'node:fs'
 import { spawnSync } from 'node:child_process'
-import { ensureDataDir, instanceFile, startupLockFile } from './paths'
+import { ensureDataDir, instanceFile, startupLockFile, LOOPBACK_HOST } from './paths'
 
 export interface DshRecord {
   /** PID of the dsh web process (null when an external instance's PID could not be resolved). */
   pid: number | null
   /** Port the dsh web server listens on. */
   port: number
-  /** 'extension' = spawned/managed by this extension (stopped on last window); 'external' = adopted (also stopped on last window when PID known). */
-  managedBy: 'extension' | 'external'
+  /**
+   * Ownership used by last-window stop arbitration (ADR-4, P0-F):
+   * - 'managed-own' = this extension代拉的一个 detached 独立常驻 dsh（仅最后窗口+防误杀才停）
+   * - 'extension'   = legacy/other extension-managed dsh（同样仅最后窗口才停）
+   * - 'external'    = 手动 cmd 或其它工具起的 dsh（最后窗口不杀，保留 known-external 记录）
+   */
+  managedBy: 'extension' | 'external' | 'managed-own'
   startedAt: string
 }
 
@@ -152,7 +157,9 @@ export function resolvePortPid(port: number): PortPid | null {
       const m = line.match(/^\s*TCP\s+([\d.]+):(\d+)\s+[\d.:*]+:\d+\s+LISTENING\s+(\d+)\s*$/)
       if (!m) continue
       const [, address, portStr, pidStr] = m
-      if (Number(portStr) === port && (address === '127.0.0.1' || address === '0.0.0.0' || address === '[::1]')) {
+      // Loopback filter references LOOPBACK_HOST (single source, F3); wildcard
+      // binds (0.0.0.0 / [::1]) still count as reachable on the same port.
+      if (Number(portStr) === port && (address === LOOPBACK_HOST || address === '0.0.0.0' || address === '[::1]')) {
         return { pid: Number(pidStr), address }
       }
     }

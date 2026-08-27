@@ -34,16 +34,17 @@ code --install-extension dsh-vscode-agent-0.1.0.vsix
 | `dsh.autoStart` | `true` | VSCode 启动时自动启动/复用 dsh |
 | `dsh.autoOpenPanel` | `true` | 启动后自动展开右侧边栏面板 |
 | `dsh.dshHome` | 空 | DSH_HOME（空 = 默认 `~/.dsh`，与浏览器版共享会话） |
+| `dsh.probeIntervalSec` | `30` | detached dsh 存活探活周期（秒；0 = 关闭探活） |
 
 ## 命令
 
-- `DSH: Open Panel` / `DSH: Restart Runtime` / `DSH: Stop Runtime`
-- `DSH: Open in Browser` / `DSH: Update Runtime`
+- `DSH: Open Panel` / `DSH: Restart Runtime`（reconnect，不关停 dsh）/ `DSH: Stop Runtime`（disconnect，不关停 dsh）
+- `DSH: Open in Browser` / `DSH: Update Runtime`（受控重拉 managed dsh；外部 dsh 提示手动 `npx @deepseek-ai/dsh@latest web`）
 
 ## 数据与日志
 
 - 协调注册表/启动锁：`%LOCALAPPDATA%\DshVscode\`
-- dsh 日志：`%LOCALAPPDATA%\DshVscode\logs\dsh.log`
+- dsh 日志：`%LOCALAPPDATA%\DshVscode\logs\dsh.log`；managed detached dsh 输出：`logs\dsh-<ts>.log`（按日轮转，保留最近 3 份）
 
 ## 开发
 
