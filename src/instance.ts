@@ -162,13 +162,16 @@ export function resolvePortPid(port: number): PortPid | null {
   return null
 }
 
-/** Best-effort command line of a PID (Windows, via PowerShell CIM). */
-export function processCommandLine(pid: number): string | null {
+/**
+ * Best-effort command line of a PID (Windows, via PowerShell CIM).
+ * Cold WMI starts can exceed the default timeout; callers may extend it.
+ */
+export function processCommandLine(pid: number, timeoutMs = 10_000): string | null {
   try {
     const out = spawnSync(
       'powershell.exe',
       ['-NoProfile', '-NonInteractive', '-Command', `(Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}").CommandLine`],
-      { encoding: 'utf8', windowsHide: true, timeout: 10_000 },
+      { encoding: 'utf8', windowsHide: true, timeout: timeoutMs },
     )
     if (out.status !== 0) return null
     const line = out.stdout.trim()

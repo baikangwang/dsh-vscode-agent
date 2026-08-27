@@ -127,9 +127,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 }
 
 async function openPanel(): Promise<void> {
-  // Auxiliary bar container reveal; fall back to toggling the auxiliary bar.
+  // Secondary sidebar (auxiliary bar) container reveal; fall back to toggling
+  // the part. The container's open command is auto-registered by VSCode as
+  // workbench.view.extension.<containerId> (verified in 1.134 workbench source).
   try {
-    await vscode.commands.executeCommand('workbench.view.extension.dsh.viewContainer')
+    await vscode.commands.executeCommand('workbench.view.extension.dsh-viewContainer')
   } catch {
     await vscode.commands.executeCommand('workbench.action.toggleAuxiliaryBar')
   }

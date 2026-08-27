@@ -113,7 +113,8 @@ export class DshProcess extends EventEmitter {
       // Custom command: run through cmd.exe for shell semantics.
       return { exec: 'cmd.exe', argv: ['/d', '/s', '/c', command], display: command }
     }
-    const spec = channel === 'latest' || channel === 'preview' ? channel : channel
+    // channel may be 'latest' | 'preview' | exact version; all pass through verbatim.
+    const spec = channel
     const npxArgs = [
       'npx',
       '--yes',

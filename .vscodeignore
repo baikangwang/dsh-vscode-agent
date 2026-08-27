@@ -9,6 +9,7 @@ tsconfig.json
 **/*.map
 **/*.ts
 docs/**
+.dsh/**
 .git/**
 .gitignore
 *.vsix

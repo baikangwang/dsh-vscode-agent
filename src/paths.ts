@@ -24,6 +24,11 @@ export function logFile(): string {
   return path.join(dataDir(), 'logs', 'dsh.log')
 }
 
+/** Decision-trace log written by the runtime orchestration (all start/shutdown branches). */
+export function runtimeLogFile(): string {
+  return path.join(dataDir(), 'logs', 'runtime.log')
+}
+
 export function ensureDataDir(): void {
   const { mkdirSync } = require('node:fs') as typeof import('node:fs')
   mkdirSync(dataDir(), { recursive: true })

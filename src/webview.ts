@@ -1,13 +1,36 @@
 // The right-side-bar webview view: an iframe hosting the dsh web UI plus a
 // slim status overlay and toolbar (reload / open-in-browser / restart / stop).
+import * as fs from 'node:fs'
+import * as path from 'node:path'
 import * as vscode from 'vscode'
 import { DshRuntime, RuntimeState } from './runtime'
+import { runtimeLogFile } from './paths'
 
 const VIEW_ID = 'dsh.panel'
 
+/** Acknowledgment budget (ms): waiting longer than this for a matching stateAck
+ *  after a ready snapshot triggers a defensive re-push (see onAckTimeout). */
+const ACK_BUDGET_MS = 3000
+/** Max defensive re-pushes per ack window, guarding against hot loops when the
+ *  page is stuck and can never ack. */
+const MAX_REPUSH = 2
+
 /** Messages the webview page sends to the extension host. */
-type WebviewMessage = {
-  type: 'webviewReady' | 'reload' | 'openBrowser' | 'restart' | 'stop'
+type WebviewMessage =
+  | { type: 'webviewReady' | 'reload' | 'openBrowser' | 'restart' | 'stop' }
+  | { type: 'stateAck'; appliedState?: RuntimeState }
+
+/** Append a diagnostic line to logs/runtime.log in the same format as the
+ *  runtime's rlog, prefixed with `dsh.panel:` so the panel message round-trip
+ *  (emit -> recv -> ack) is grep-able. Diagnostics only; never throws. */
+function panelLog(msg: string): void {
+  try {
+    const file = runtimeLogFile()
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.appendFileSync(file, `[${new Date().toISOString()}] [win ${process.pid}] dsh.panel: ${msg}\n`, 'utf8')
+  } catch {
+    /* diagnostics must never break the panel */
+  }
 }
 
 export class DshPanel implements vscode.WebviewViewProvider {
@@ -15,6 +38,16 @@ export class DshPanel implements vscode.WebviewViewProvider {
 
   private view: vscode.WebviewView | null = null
   private lastUrl: string | null = null
+  /** The dsh url baked into the current webview html's `<iframe src>`, or null
+   *  when the current html carries no baked src (url unknown at resolve time,
+   *  or pre-ready placeholder). Guards the one-time re-bake in refresh(). */
+  private bakedUrl: string | null = null
+  /** True once the page has signalled webviewReady (listener attached). */
+  private pageReady = false
+  /** State whose ack we are still waiting on; a timer re-pushes on timeout. */
+  private awaitingAck: RuntimeState | null = null
+  private awaitingAckRepushes = 0
+  private ackTimer: ReturnType<typeof setTimeout> | null = null
 
   constructor(private readonly runtime: DshRuntime) {
     runtime.on('state', () => this.refresh())
@@ -26,15 +59,43 @@ export class DshPanel implements vscode.WebviewViewProvider {
       enableScripts: true,
       localResourceRoots: [],
     }
-    webviewView.webview.html = this.html(webviewView.webview)
+    webviewView.webview.html = this.html(webviewView.webview, this.runtime.url)
+    // Track exactly what was baked so refresh() can re-bake once when the url
+    // becomes known/changes after a pre-ready resolve (see refresh()).
+    this.bakedUrl = this.runtime.url
     webviewView.webview.onDidReceiveMessage((msg: WebviewMessage) => {
       switch (msg.type) {
         case 'webviewReady':
           // Handshake: the page has attached its listener; unconditionally
           // re-push the current state snapshot (covers the boot race where
           // earlier messages were dropped before the listener was live).
+          this.pageReady = true
+          // A reloaded page is a fresh ack period: any prior stuck-loop repush
+          // budget is no longer relevant, so clear the timer and zero the
+          // counter before re-pushing the current snapshot.
+          this.clearAckTimer()
+          this.awaitingAckRepushes = 0
+          panelLog(`recv webviewReady; re-pushing snapshot (state=${this.runtime.state})`)
           this.refresh()
           break
+        case 'stateAck': {
+          this.clearAckTimer()
+          const applied = msg.appliedState ?? null
+          const current = this.runtime.state
+          if (applied === current) {
+            panelLog(`recv stateAck appliedState=${applied ?? 'undefined'} ok=true`)
+            this.awaitingAck = null
+            this.awaitingAckRepushes = 0
+          } else {
+            // The page rendered a stale snapshot (state changed underneath it);
+            // defensively re-push so the panel can converge (refresh re-arms).
+            panelLog(`recv stateAck appliedState=${applied ?? 'undefined'} != current=${current}; defensive re-push`)
+            this.awaitingAck = null
+            this.awaitingAckRepushes = 0
+            this.refresh()
+          }
+          break
+        }
         case 'reload':
           void vscode.commands.executeCommand('dsh.restart')
           break
@@ -52,10 +113,13 @@ export class DshPanel implements vscode.WebviewViewProvider {
     webviewView.onDidDispose(() => {
       // Only drop the reference for the exact instance being disposed so a
       // freshly recreated view is not suppressed, and clear lastUrl so setUrl
-      // is not blocked after a rebuild.
+      // is not blocked after a rebuild. Also stop any pending ack timer.
+      this.resetAck()
       if (this.view === webviewView) {
         this.view = null
         this.lastUrl = null
+        this.bakedUrl = null
+        panelLog(`dispose: view closed (state=${this.runtime.state})`)
       }
     })
     this.refresh()
@@ -63,20 +127,122 @@ export class DshPanel implements vscode.WebviewViewProvider {
 
   private refresh(): void {
     const view = this.view
-    if (!view) return
+    if (!view) {
+      // Not silent: observability. A drop here used to invisibly stall the
+      // panel at "initializing…" when a push landed in the dispose window.
+      panelLog(`refresh: view=null (state=${this.runtime.state}); skipping push`)
+      return
+    }
     const state: RuntimeState = this.runtime.state
     const url = this.runtime.url
     const error = this.runtime.errorMessage
     view.webview.postMessage({ type: 'state', state, url, error })
+    panelLog(`emit state=${state} url=${url ?? 'null'} error=${error ?? 'null'}`)
+    if (state === 'ready' && url && url !== this.bakedUrl) {
+      // v4: the current html was baked without this url (resolve happened
+      // before ready, or the url changed). Re-write it once so the iframe
+      // carries `src=runtime.url` and shows dsh UI even if the page script
+      // never runs (the 0-handshake root cause). Guarded by bakedUrl so this
+      // fires at most once per url; the setUrl message below stays as the
+      // script-level enhancement.
+      panelLog(`re-bake html url=${url} (was baked=${this.bakedUrl ?? 'null'})`)
+      view.webview.html = this.html(view.webview, url)
+      this.bakedUrl = url
+    }
     if (state === 'ready' && url && url !== this.lastUrl) {
       // Script updates the iframe src (kept in the DOM between messages).
       view.webview.postMessage({ type: 'setUrl', url })
       this.lastUrl = url
     }
     if (state !== 'ready') this.lastUrl = null
+    // Arm the ack budget for the just-pushed snapshot (no-op unless a ready
+    // push is in flight on a webviewReady page).
+    this.armAckWait()
   }
 
-  private html(wv: vscode.Webview): string {
+  /** Clear the pending ack timeout, if any. */
+  private clearAckTimer(): void {
+    if (this.ackTimer !== null) {
+      clearTimeout(this.ackTimer)
+      this.ackTimer = null
+    }
+  }
+
+  /** Reset all ack state (on dispose / when not tracking a ready push). */
+  private resetAck(): void {
+    this.clearAckTimer()
+    this.pageReady = false
+    this.awaitingAck = null
+    this.awaitingAckRepushes = 0
+  }
+
+  /** Arm a boundary-timed ack wait after pushing a `ready` snapshot, so we can
+   *  defend against "pushed but the page never rendered / ack was lost". */
+  private armAckWait(): void {
+    if (!this.pageReady || this.view === null || this.runtime.state !== 'ready') {
+      this.clearAckTimer()
+      this.awaitingAck = null
+      this.awaitingAckRepushes = 0
+      return
+    }
+    this.awaitingAck = 'ready'
+    // Do NOT reset awaitingAckRepushes here: it must stay monotonic across the
+    // re-push loop so a page that never acks can reach >= MAX_REPUSH and give
+    // up instead of re-pushing forever. The counter is reset to 0 only at a
+    // fresh-cycle boundary (matching stateAck / new webviewReady / giving-up /
+    // non-ready); see onAckTimeout and the webviewReady handler.
+    this.clearAckTimer()
+    this.ackTimer = setTimeout(() => this.onAckTimeout(), ACK_BUDGET_MS)
+  }
+
+  /** Fallback: no matching ack arrived within the budget; re-push (≤ MAX_REPUSH). */
+  private onAckTimeout(): void {
+    this.ackTimer = null
+    if (!this.pageReady || this.view === null || this.awaitingAck === null) return
+    const state = this.runtime.state
+    if (state !== 'ready') {
+      // Converged to a non-ready state meanwhile; normal push path handles it.
+      this.awaitingAck = null
+      this.awaitingAckRepushes = 0
+      return
+    }
+    if (this.awaitingAckRepushes >= MAX_REPUSH) {
+      panelLog(`ack timeout: no ack for ${state} after ${MAX_REPUSH} re-pushes; giving up`)
+      this.awaitingAck = null
+      this.awaitingAckRepushes = 0
+      return
+    }
+    this.awaitingAckRepushes++
+    panelLog(`ack timeout: no ack for state=${state} within ${ACK_BUDGET_MS}ms; defensive re-push #${this.awaitingAckRepushes}`)
+    this.refresh()
+  }
+
+  /** Escape a runtime value for safe embedding into an HTML attribute. */
+  private escapeAttr(s: string): string {
+    return s.replace(/[&"<>]/g, (c) =>
+      ({ '&': '&amp;', '"': '&quot;', '<': '&lt;', '>': '&gt;' })[c] as string)
+  }
+
+  /**
+   * Build the panel document. v4: when `url` is known (ready), the dsh url is
+   * baked straight into `<iframe src>` and the iframe is made visible / the
+   * overlay hidden at the STATIC HTML level — so dsh UI displays even if the
+   * page script never executes (the 0-handshake root cause). The page script
+   * below is then only an enhancement layer (toolbar/status/errors).
+   *
+   * HARD CONSTRAINT (去硬编码): the baked src is the ONLY thing that may come
+   * from `url` (which is always `this.runtime.url`). No host/port/http prefix,
+   * no 127.0.0.1 / 3080 literal, is ever written here or in the page script.
+   * When url is empty/unknown the iframe is left without src and hidden, and
+   * the overlay shows the initializing placeholder.
+   */
+  private html(wv: vscode.Webview, url: string | null): string {
+    const known = url !== null && url !== ''
+    // Static visibility decided at write time: known url -> iframe visible and
+    // overlay hidden without requiring the page script to run (critical v4
+    // implementation item from the QA design gate).
+    const frameAttr = known ? ` style="display:block" src="${this.escapeAttr(url!)}"` : ''
+    const overlayCls = known ? ' class="hide"' : ''
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -113,14 +279,23 @@ export class DshPanel implements vscode.WebviewViewProvider {
     <button id="btn-stop" title="Stop runtime">■</button>
   </div>
   <div id="stage">
-    <div id="overlay">initializing…</div>
-    <iframe id="frame" sandbox="allow-scripts allow-forms allow-same-origin allow-downloads"></iframe>
+    <div id="overlay"${overlayCls}>initializing…</div>
+    <iframe id="frame" sandbox="allow-scripts allow-forms allow-same-origin allow-downloads"${frameAttr}></iframe>
   </div>
 <script>
 (function () {
   var stateEl = document.getElementById('state');
   var overlayEl = document.getElementById('overlay');
   var frameEl = document.getElementById('frame');
+  // Boot observation (v4, item 3): prove the page script actually executed.
+  // Grep for the appended title marker / console line to tell "document
+  // rendered and script ran" apart from "document never loaded". Observation
+  // only — must never break the ack / toolbar logic below.
+  try {
+    document.title += ' ·booted';
+    console.log('[dsh-panel] page booted at', location.href);
+    if (stateEl) stateEl.textContent = 'page booted…';
+  } catch (e) { /* observation must never block the page */ }
   if (typeof acquireVsCodeApi !== 'function') {
     // Diagnostics: VSCode's injected API script was blocked (CSP) — without it
     // no state message can ever arrive and the overlay stays at 'initializing…'.
@@ -149,6 +324,9 @@ export class DshPanel implements vscode.WebviewViewProvider {
         overlayEl.textContent = msg.state === 'starting' ? '正在启动 dsh…' : msg.state;
         overlayEl.classList.remove('hide');
       }
+      // Ack back to the extension host so it can defensively re-push on a
+      // stale snapshot or a lost ack (self-healing handshake).
+      vscode.postMessage({ type: 'stateAck', appliedState: msg.state });
     }
   });
   document.getElementById('btn-open').addEventListener('click', () => vscode.postMessage({ type: 'openBrowser' }));
