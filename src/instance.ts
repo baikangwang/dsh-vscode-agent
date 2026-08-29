@@ -26,6 +26,8 @@ export interface WindowRecord {
   app: string
   /** Extension host process PID (unique per window). */
   pid: number
+  /** The moment this window was FIRST attached; same-pid re-registration
+   *  preserves it (ADR-16: first-attachment semantics, never reset). */
   startedAt: string
 }
 
@@ -84,7 +86,14 @@ export function dshAlive(inst: InstanceState): boolean {
 export function registerWindow(inst: InstanceState, app: string, pid: number): InstanceState {
   const next = { ...inst, windows: [...inst.windows] }
   const idx = next.windows.findIndex((w) => w.pid === pid)
-  const rec: WindowRecord = { app, pid, startedAt: new Date().toISOString() }
+  const existing = idx >= 0 ? next.windows[idx] : null
+  // ADR-16: same-pid re-registration keeps the FIRST-attachment startedAt;
+  // only a genuinely new window pid gets a fresh timestamp.
+  const rec: WindowRecord = {
+    app,
+    pid,
+    startedAt: existing !== null ? existing.startedAt : new Date().toISOString(),
+  }
   if (idx >= 0) next.windows[idx] = rec
   else next.windows.push(rec)
   return next
@@ -92,6 +101,111 @@ export function registerWindow(inst: InstanceState, app: string, pid: number): I
 
 export function unregisterWindow(inst: InstanceState, pid: number): InstanceState {
   return { ...inst, windows: inst.windows.filter((w) => w.pid !== pid) }
+}
+
+// ------------------------------------------------------- stale-window healing (ADR-15)
+
+/**
+ * Identity verdict for a (live) window pid, P-STALEWIN §4.2.1:
+ * - 'exthost'  : CommandLine contains `--type=extensionHost` (the deterministic,
+ *                channel/version-stable VSCode extension-host signature) -> KEEP.
+ * - 'foreign'  : query succeeded with a non-empty CommandLine that does not
+ *                match -> the pid is no longer a VSCode extension host
+ *                (reused/stale) -> CLEAR.
+ * - 'unknown'  : query failed / timed out / empty CommandLine -> KEEP
+ *                (safe-side: 宁留勿误清, same direction as the shutdown
+ *                triple-gate; never clear on unknown).
+ */
+export type IdentityVerdict = 'exthost' | 'foreign' | 'unknown'
+
+/** One CIM identity query per pid per TTL (WMI cold start 0.5-3s; ADR-15 cache). */
+export const IDENTITY_CACHE_TTL_MS = 60_000
+const identityCache = new Map<number, { at: number; verdict: IdentityVerdict }>()
+
+/** Cached identity verdict (module-level Map<pid, {at, verdict}>, TTL-bounded). */
+export function processIdentitySync(pid: number, timeoutMs: number): IdentityVerdict {
+  const hit = identityCache.get(pid)
+  if (hit !== undefined && Date.now() - hit.at < IDENTITY_CACHE_TTL_MS) return hit.verdict
+  const verdict = queryIdentitySync(pid, timeoutMs)
+  identityCache.set(pid, { at: Date.now(), verdict })
+  return verdict
+}
+
+/** One CIM query fetching Name + CommandLine (bounded powershell spawnSync). */
+function queryIdentitySync(pid: number, timeoutMs: number): IdentityVerdict {
+  try {
+    const out = spawnSync(
+      'powershell.exe',
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        `$p = Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}" | Select-Object -First 1 -Property Name, CommandLine; if ($p) { $p | ConvertTo-Json -Compress }`,
+      ],
+      { encoding: 'utf8', windowsHide: true, timeout: timeoutMs },
+    )
+    if (out.status !== 0) return 'unknown'
+    const text = out.stdout.trim()
+    if (text.length === 0) return 'unknown' // no match / no output -> safe-side
+    let parsed: { Name?: unknown; CommandLine?: unknown } | null = null
+    try {
+      parsed = JSON.parse(text) as { Name?: unknown; CommandLine?: unknown }
+    } catch {
+      return 'unknown'
+    }
+    const cl = typeof parsed?.CommandLine === 'string' ? parsed.CommandLine : ''
+    if (cl.length === 0) return 'unknown' // empty CommandLine -> unknown (safe-side)
+    return cl.includes('--type=extensionHost') ? 'exthost' : 'foreign'
+  } catch {
+    return 'unknown'
+  }
+}
+
+export interface ScrubResult {
+  /** Scrubbed instance (windows[] with stale entries removed). */
+  inst: InstanceState
+  /** Number of removed entries. */
+  removed: number
+  /** The removed pids (liveness-dead first, then identity-foreign). */
+  removedPids: number[]
+}
+
+/**
+ * T1 liveness scrub (instant, zero I/O): drop window entries whose pid is no
+ * longer alive (`process.kill(pid,0)`). Covers the force-killed-host scenario.
+ */
+export function scrubDeadWindowsSync(inst: InstanceState): ScrubResult {
+  const removedPids = inst.windows.filter((w) => !isAlive(w.pid)).map((w) => w.pid)
+  const kept = inst.windows.filter((w) => isAlive(w.pid))
+  return { inst: { ...inst, windows: kept }, removed: removedPids.length, removedPids }
+}
+
+/**
+ * Full stale-window scrub (ADR-15): liveness first, then a bounded identity
+ * check for the SURVIVING pids (pid-reuse guard). 'foreign' entries are
+ * removed; 'exthost' and 'unknown' are always kept (safe-side). Callers pass
+ * `timeoutMs` per identity query (T1b async: 10s; T2 exit path: 2s) and may
+ * inject `identityCheck` for headless tests (PW-3).
+ */
+export function scrubWindowsWithIdentitySync(
+  inst: InstanceState,
+  timeoutMs: number,
+  identityCheck?: (pid: number) => IdentityVerdict,
+): ScrubResult {
+  const dead = inst.windows.filter((w) => !isAlive(w.pid)).map((w) => w.pid)
+  let kept = inst.windows.filter((w) => isAlive(w.pid))
+  const check = identityCheck ?? ((pid: number) => processIdentitySync(pid, timeoutMs))
+  const foreign: number[] = []
+  kept = kept.filter((w) => {
+    const verdict = check(w.pid)
+    if (verdict === 'foreign') {
+      foreign.push(w.pid)
+      return false
+    }
+    return true // 'exthost' keep; 'unknown' keep (safe-side, never clear)
+  })
+  const removedPids = [...dead, ...foreign]
+  return { inst: { ...inst, windows: kept }, removed: removedPids.length, removedPids }
 }
 
 // ---------------------------------------------------------------- startup lock

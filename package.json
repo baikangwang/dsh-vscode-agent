@@ -2,7 +2,7 @@
   "name": "dsh-vscode-agent",
   "displayName": "DSH Panel",
   "description": "DeepSeek Harness 右侧边栏面板：启动/复用 dsh web 并内嵌其 Web UI",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "publisher": "dsh-vscode-agent",
   "private": true,
   "license": "MIT",
@@ -78,13 +78,13 @@
             "latest",
             "preview"
           ],
-          "description": "dsh 运行时版本通道；每次启动自动检查并更新，离线时回退 npx 缓存。"
+          "description": "dsh 运行时版本通道；启动时 best-effort 检查更新（24h 新鲜度窗口，离线用已装版本），版本过期时对 npx 缓存中的命中目录原地刷新（复用 npx 已安装的 dsh，不产生第二份安装）。"
         },
         "dsh.command": {
           "type": "string",
           "default": "",
-          "description": "自定义 dsh 启动命令（留空自动解析：npx @deepseek-ai/dsh）。示例：dsh web --port 3080。",
-          "markdownDescription": "自定义 dsh 启动命令（留空自动解析：`npx @deepseek-ai/dsh`）。示例：`dsh web --port 3080`。"
+          "description": "自定义 dsh 启动命令（留空自动解析：npx @deepseek-ai/dsh）。示例：dsh web --port 3080。注意：自定义命令不保证无控制台窗口（遗留边界）。",
+          "markdownDescription": "自定义 dsh 启动命令（留空自动解析：`npx @deepseek-ai/dsh`）。示例：`dsh web --port 3080`。注意：自定义命令不保证无控制台窗口（遗留边界）。"
         },
         "dsh.autoStart": {
           "type": "boolean",

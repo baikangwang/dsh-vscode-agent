@@ -74,6 +74,33 @@ export function runtimeLogFile(): string {
   return path.join(dataDir(), 'logs', 'runtime.log')
 }
 
+/**
+ * Runtime freshness meta file (ADR-13, 0.1.7): dataDir()/dsh-runtime-meta/<channel>.json.
+ * Carries ONLY { lastCheckAt, knownVersion } — pure metadata, never a package
+ * install (single runtime source of truth stays the npx cache, ADR-12 v2.1).
+ * The channel is sanitized to a safe file-name segment (defensive; values are
+ * 'latest' | 'preview' | an exact version in practice).
+ */
+export function runtimeMetaFile(channel: string): string {
+  const safe = channel.replace(/[^A-Za-z0-9._-]/g, '_')
+  return path.join(dataDir(), 'dsh-runtime-meta', `${safe}.json`)
+}
+
+/**
+ * Append a decision-trace line to logs/runtime.log. Shared by the runtime
+ * orchestration, the managed-launcher fallback decisions and the dshResolver
+ * (full decision trajectory, design §4.1.2/§10). Diagnostics only; never throws.
+ */
+export function appendDecisionLog(msg: string): void {
+  try {
+    const file = runtimeLogFile()
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.appendFileSync(file, `[${new Date().toISOString()}] [win ${process.pid}] ${msg}\n`, 'utf8')
+  } catch {
+    /* diagnostics must never break the runtime */
+  }
+}
+
 export function ensureDataDir(): void {
   const { mkdirSync } = require('node:fs') as typeof import('node:fs')
   mkdirSync(dataDir(), { recursive: true })

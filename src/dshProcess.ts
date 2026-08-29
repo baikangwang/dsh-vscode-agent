@@ -9,7 +9,8 @@
 import { spawn, spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import { EventEmitter } from 'node:events'
-import { managedDshLogFile, LOOPBACK_HOST } from './paths'
+import { managedDshLogFile, LOOPBACK_HOST, appendDecisionLog } from './paths'
+import { resolveDshBin, resolveNodeAndNpm, DSH_PKG, type DshBinInfo } from './dshResolver'
 
 export interface SpawnOptions {
   /** Port to request (0 = OS assigned; random-port path). */
@@ -92,7 +93,7 @@ export class DshProcess extends EventEmitter {
    */
   async start(): Promise<SpawnedInfo> {
     const logFile = managedDshLogFile()
-    const args = this.buildArgs()
+    const args = await this.buildLaunch(logFile)
     // Redirect both stdout and stderr into the managed log file (P0-B). Open
     // an append fd, hand it to the child, then release it on our side so the
     // detached process owns the file independently.
@@ -145,18 +146,49 @@ export class DshProcess extends EventEmitter {
     throw new LaunchFailure(`dsh did not expose a ready port within ${STARTUP_TIMEOUT_MS}ms; log: ${logFile}`, logFile)
   }
 
-  private buildArgs(): { exec: string; argv: string[]; display: string } {
+  /**
+   * Build the launch exec/argv (0.1.7, ADR-11/12/14):
+   * - custom `command` path: 0.1.6 behavior UNCHANGED (legacy boundary §4.1.7);
+   * - npx path: resolve the dsh bin inside the npx cache (single runtime source,
+   *   ADR-12 v2.1) and launch it DIRECTLY via node — the cmd/npx/.cmd shim chain
+   *   (the visible-console root cause, §3.1) is removed. The spawn flags stay
+   *   byte-identical to 0.1.6 (`detached/windowsHide/stdio fd/unref`); only
+   *   exec/argv change, so the recorded pid = the real dsh service process
+   *   (ADR-14, P-PIDREC closed structurally).
+   * - resolver null -> untouched 0.1.6 `cmd.exe /d /s /c npx …` fallback + rlog
+   *   (safety net: worst case = 0.1.6 behavior/pid shape, §4.1.7).
+   */
+  private async buildLaunch(logFile: string): Promise<{ exec: string; argv: string[]; display: string }> {
     const { command, channel } = this.options
     if (command.trim().length > 0) {
-      // Custom command: run through cmd.exe for shell semantics.
+      // Custom command: run through cmd.exe for shell semantics (unchanged).
       return { exec: 'cmd.exe', argv: ['/d', '/s', '/c', command], display: command }
+    }
+    let bin: DshBinInfo | null = null
+    try {
+      bin = await resolveDshBin(channel, { logFile })
+    } catch (err) {
+      // resolveDshBin is contractually null-on-failure; belt-and-suspenders only.
+      bin = null
+      appendDecisionLog(`[dshProcess] resolveDshBin threw (contract violation) -> fallback: ${(err as Error).message}`)
+    }
+    if (bin !== null) {
+      const tools = resolveNodeAndNpm()
+      if (tools !== null) {
+        appendDecisionLog(`[dshProcess] direct-node launch via resolver (mode=${bin.mode}, v${bin.version}, dir=${bin.dir})`)
+        const argv = [bin.binJs, 'web', '--host', LOOPBACK_HOST, '--port', String(this.options.port), '--no-open']
+        return { exec: tools.nodeExe, argv, display: `${tools.nodeExe} ${argv.join(' ')}` }
+      }
+      appendDecisionLog('[dshProcess] node resolution vanished after resolveDshBin -> 0.1.6 cmd+npx fallback')
+    } else {
+      appendDecisionLog('[dshProcess] resolveDshBin -> null (npx cache unresolvable); 0.1.6 cmd.exe+npx fallback path (safety net)')
     }
     const spec = channel
     const npxArgs = [
       'npx',
       '--yes',
       '--prefer-offline',
-      `@deepseek-ai/dsh@${spec}`,
+      `${DSH_PKG}@${spec}`,
       'web',
       '--host', LOOPBACK_HOST, // single source (F3)
       '--port', String(this.options.port),

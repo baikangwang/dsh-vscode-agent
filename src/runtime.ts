@@ -10,16 +10,16 @@
 // external periodic probe (P0-C); disconnect/reconnect never kill (P0-D).
 // Pure Node (no vscode dependency).
 import { EventEmitter } from 'node:events'
-import * as fs from 'node:fs'
-import * as path from 'node:path'
 import * as net from 'node:net'
 import {
   acquireStartupLock, dshAlive, isAlive, looksLikeDsh, processCommandLine,
-  readInstance, registerWindow, releaseStartupLock, resolvePortPid, unregisterWindow,
-  writeInstance,
+  readInstance, registerWindow, releaseStartupLock, resolvePortPid, scrubDeadWindowsSync,
+  scrubWindowsWithIdentitySync, unregisterWindow, writeInstance,
+  type IdentityVerdict,
 } from './instance'
 import { DshProcess, probe as dshProbe, treeKill } from './dshProcess'
-import { runtimeLogFile, LOOPBACK_HOST } from './paths'
+import { resolveDshBin } from './dshResolver'
+import { appendDecisionLog, LOOPBACK_HOST } from './paths'
 
 export type ManagedBy = 'extension' | 'external' | 'managed-own'
 
@@ -28,16 +28,14 @@ const DEFAULT_PROBE_INTERVAL_SEC = 30
 const LIVENESS_FAIL_THRESHOLD = 3
 const MAX_RESTARTS = 6
 const BACKOFFS_MS = [1_000, 2_000, 4_000, 8_000, 16_000, 32_000]
+/** T1b async identity-check budget per entry (connect path, non-blocking). */
+const T1B_IDENTITY_TIMEOUT_MS = 10_000
+/** T2 identity-check budget per entry (sync exit hook, latency-sensitive). */
+const T2_IDENTITY_TIMEOUT_MS = 2_000
 
 /** Append a decision-trace line to logs/runtime.log (diagnostics only; never throws). */
 function rlog(msg: string): void {
-  try {
-    const file = runtimeLogFile()
-    fs.mkdirSync(path.dirname(file), { recursive: true })
-    fs.appendFileSync(file, `[${new Date().toISOString()}] [win ${process.pid}] ${msg}\n`, 'utf8')
-  } catch {
-    /* diagnostics must never break the runtime */
-  }
+  appendDecisionLog(msg)
 }
 
 /**
@@ -70,6 +68,12 @@ export interface RuntimeOptions {
   dshHome: string
   /** Liveness probe cadence in seconds (P0-C); <=0 disables probing. */
   probeIntervalSec?: number
+  /**
+   * Stale-window identity check injection seam (ADR-15, §4.2.2). Default = the
+   * real CIM implementation (`processIdentitySync`); headless tests inject a
+   * mock to assert the exthost/foreign/unknown branches (PW-3).
+   */
+  identityCheck?: (pid: number) => IdentityVerdict
 }
 
 export class DshRuntime extends EventEmitter {
@@ -122,7 +126,7 @@ export class DshRuntime extends EventEmitter {
     if (registryAlive && registryProbed && inst.dsh) {
       // Re-adopt the still-resident detached dsh (F1 / P0-H): no spawn.
       this.adopt(inst.dsh.port, inst.dsh.pid, inst.dsh.managedBy)
-      this.writeRegistry()
+      await this.writeRegistry()
       this.startProbe()
       return
     }
@@ -145,15 +149,37 @@ export class DshRuntime extends EventEmitter {
           const like = looksLikeDsh(cmdline)
           rlog(`step2 looksLikeDsh=${like}`)
           pid = like ? holder.pid : null
+          // §4.3.1 residual migration (0.1.6 -> 0.1.7 upgrade path): a stale
+          // managed-own registry record whose recorded (wrapper) pid is dead
+          // while a LIVE dsh holder still serves the REGISTERED port with a dsh
+          // signature -> adopt as managed-own with dsh.pid refreshed to the
+          // holder (ADR-14). Four-condition gate; ANY unmet condition falls
+          // through to the existing external adopt (safe side, never kills).
+          const rec = inst.dsh
+          if (
+            like && rec !== null && rec.managedBy === 'managed-own' && rec.port === probePort &&
+            (rec.pid === null || !isAlive(rec.pid))
+          ) {
+            rlog(
+              `step2 residual migration: adopted 0.1.6 residual as managed-own ` +
+                `(registered pid ${rec.pid ?? 'null'} dead, live dsh holder ${holder.pid} on registered port ${probePort}, dsh signature matched)`,
+            )
+            this.adopt(probePort, holder.pid, 'managed-own')
+            await this.writeRegistry()
+            this.startProbe()
+            return
+          }
         } else {
           // CIM unavailable: the page probe already verified the __DSH_BOOT__
           // signature; record the holder PID. Last-window kill still re-verifies.
+          // (Residual migration is NOT applied: the dsh signature is unverifiable
+          // -> safe side keeps the external path, §4.3.1.)
           pid = holder.pid
           rlog('step2 CIM unavailable; recording holder pid on page-signature basis')
         }
       }
       this.adopt(probePort, pid, 'external')
-      this.writeRegistry()
+      await this.writeRegistry()
       this.startProbe()
       return
     }
@@ -204,7 +230,7 @@ export class DshRuntime extends EventEmitter {
         this.url = info.url
         this.managedBy = 'managed-own'
         this.launchAttempts = 0
-        this.writeRegistry()
+        await this.writeRegistry()
         this.setState('ready')
         this.startProbe()
         rlog(`launchManaged: ready at ${info.url} (pid ${info.pid}, log ${info.logFile})`)
@@ -243,16 +269,55 @@ export class DshRuntime extends EventEmitter {
     rlog(`adopt: ${managedBy} dsh at ${this.url} (pid ${pid ?? 'null'})`)
   }
 
-  private writeRegistry(): void {
-    const inst = readInstance()
+  /**
+   * Persist the dsh record + this window's registration (0.1.7, ADR-15/16):
+   *  - T1 sync: liveness scrub of dead window entries (microsecond process.kill,
+   *    covers the force-killed-host scenario, P-STALEWIN);
+   *  - register this window (same-pid re-registration keeps its startedAt);
+   *  - dsh.startedAt is PRESERVED when re-adopting the same dsh pid (ADR-16);
+   *    the F-05 guard `this.dshPid !== null` prevents the external case
+   *    (dshPid === null) from wrongly keeping a stale value via null===null;
+   *  - T1b async: bounded identity scrub of the surviving entries
+   *    (fire-and-forget, never blocks startup); verified-foreign entries are
+   *    removed with a guarded surgical rewrite.
+   */
+  private async writeRegistry(): Promise<void> {
+    const scrubbed = scrubDeadWindowsSync(readInstance())
+    if (scrubbed.removed > 0) {
+      rlog(`writeRegistry T1: scrubbed ${scrubbed.removed} dead window(s): [${scrubbed.removedPids.join(', ')}]`)
+    }
+    const inst = scrubbed.inst
+    const keepDshStartedAt = inst.dsh !== null && this.dshPid !== null && inst.dsh.pid === this.dshPid
     inst.dsh = {
       pid: this.dshPid ?? null,
       port: this.port ?? this.options.port,
       managedBy: this.managedBy ?? 'managed-own',
-      startedAt: new Date().toISOString(),
+      startedAt: keepDshStartedAt && inst.dsh !== null ? inst.dsh.startedAt : new Date().toISOString(),
     }
-    rlog(`writeRegistry: dsh=${JSON.stringify(inst.dsh)} +window ${this.options.windowPid}`)
     writeInstance(registerWindow(inst, this.options.app, this.options.windowPid))
+    rlog(`writeRegistry: dsh=${JSON.stringify(inst.dsh)} +window ${this.options.windowPid}`)
+    // T1b (fire-and-forget): bounded identity scrub of surviving window entries.
+    void this.scrubIdentityAsync()
+  }
+
+  /** T1b: identity scrub (10s/entry cap, 60s cache) with a guarded rewrite. */
+  private async scrubIdentityAsync(): Promise<void> {
+    try {
+      const snapshot = readInstance()
+      const res = scrubWindowsWithIdentitySync(snapshot, T1B_IDENTITY_TIMEOUT_MS, this.options.identityCheck)
+      if (res.removed === 0) return
+      // Guarded rewrite: re-read the fresh registry and remove ONLY the
+      // verified-foreign pids (never clobber concurrent registrations).
+      const fresh = readInstance()
+      const before = fresh.windows.length
+      fresh.windows = fresh.windows.filter((w) => !res.removedPids.includes(w.pid))
+      if (fresh.windows.length !== before) {
+        writeInstance(fresh)
+        rlog(`writeRegistry T1b: identity scrub removed ${before - fresh.windows.length} window(s): [${res.removedPids.join(', ')}]`)
+      }
+    } catch (err) {
+      rlog(`writeRegistry T1b: identity scrub failed (ignored): ${(err as Error).message}`)
+    }
   }
 
   private async waitForExternalStartup(probePort: number): Promise<boolean> {
@@ -262,7 +327,7 @@ export class DshRuntime extends EventEmitter {
       const port = inst.dsh?.port ?? probePort
       if (inst.dsh && port > 0 && await this.probe(port)) {
         this.adopt(port, inst.dsh.pid, inst.dsh.managedBy)
-        this.writeRegistry()
+        await this.writeRegistry()
         this.startProbe()
         return true
       }
@@ -394,6 +459,19 @@ export class DshRuntime extends EventEmitter {
     this.dshPid = null
     this.managedBy = null
     this.setState('starting')
+    // ADR-13 (0.1.7): explicit update = FORCED freshness check + in-place
+    // refresh of the npx-cached install (best-effort; runs AFTER the old process
+    // was killed so the refresh never touches files still in use). On failure
+    // the launch itself falls back to the 0.1.6 npx chain (DshProcess safety net).
+    try {
+      const bin = await resolveDshBin(this.options.channel, { force: true })
+      rlog(
+        `forceRelaunchManaged: forced runtime refresh -> ` +
+          `${bin !== null ? `v${bin.version} (${bin.mode}) at ${bin.dir}` : 'unresolved; launch will use the 0.1.6 cmd+npx fallback'}`,
+      )
+    } catch (err) {
+      rlog(`forceRelaunchManaged: forced refresh error (best-effort, continuing): ${(err as Error).message}`)
+    }
     await this.launchManaged()
     return 'relaunched'
   }
@@ -413,9 +491,18 @@ export class DshRuntime extends EventEmitter {
   shutdownBookkeeping(): boolean {
     rlog(`shutdownBookkeeping: window ${this.options.windowPid}`)
     const inst = readInstance()
-    const next = unregisterWindow(inst, this.options.windowPid)
+    const afterUnregister = unregisterWindow(inst, this.options.windowPid)
+    // T2 (ADR-15): full stale-window scrub BEFORE the last-window verdict —
+    // synchronous (exit hook), identity check bounded at 2s/entry (usually a
+    // 60s-cache hit from T1b), unknown -> keep (safe-side). Dead entries from a
+    // force-killed host can no longer block the "last window" arbitration.
+    const scrubbed = scrubWindowsWithIdentitySync(afterUnregister, T2_IDENTITY_TIMEOUT_MS, this.options.identityCheck)
+    if (scrubbed.removed > 0) {
+      rlog(`shutdown T2: scrubbed ${scrubbed.removed} stale window(s): [${scrubbed.removedPids.join(', ')}]`)
+    }
+    const next = scrubbed.inst
     writeInstance(next)
-    rlog(`shutdown: after unregister windows=${next.windows.length} dsh=${JSON.stringify(next.dsh)}`)
+    rlog(`shutdown: after unregister+scrub windows=${next.windows.length} dsh=${JSON.stringify(next.dsh)}`)
     if (next.windows.length > 0) {
       rlog('shutdown: not the last window; keeping dsh')
       return false
