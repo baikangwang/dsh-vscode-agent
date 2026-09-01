@@ -1,4 +1,4 @@
-﻿// The right-side-bar webview view: an iframe hosting the dsh web UI plus a
+// The right-side-bar webview view: an iframe hosting the dsh web UI plus a
 // slim status overlay and toolbar (reload / open-in-browser / restart / stop).
 import * as fs from 'node:fs'
 import * as path from 'node:path'
@@ -18,7 +18,7 @@ const MAX_REPUSH = 2
 
 /** Messages the webview page sends to the extension host. */
 type WebviewMessage =
-  | { type: 'webviewReady' | 'reload' | 'openBrowser' | 'restart' | 'stop' }
+  | { type: 'webviewReady' | 'reload' | 'openBrowser' | 'restart' | 'stop' | 'showDetails' }
   | { type: 'stateAck'; appliedState?: RuntimeState }
 
 /** Append a diagnostic line to logs/runtime.log in the same format as the
@@ -109,6 +109,11 @@ export class DshPanel implements vscode.WebviewViewProvider {
         case 'stop':
           void vscode.commands.executeCommand('dsh.stop')
           break
+        case 'showDetails':
+          // ADR-22 (0.1.9): toolbar ⓘ → the details view (command → focus
+          // fallback chain handled by dsh.showDetails).
+          void vscode.commands.executeCommand('dsh.showDetails')
+          break
       }
     })
     webviewView.onDidDispose(() => {
@@ -137,7 +142,10 @@ export class DshPanel implements vscode.WebviewViewProvider {
     const state: RuntimeState = this.runtime.state
     const url = this.runtime.url
     const error = this.runtime.errorMessage
-    view.webview.postMessage({ type: 'state', state, url, error })
+    // ADR-22 (0.1.9): the state payload gains the launchInfo snapshot (plain
+    // JSON, additive → backward compatible; existing consumers ignore the
+    // unknown field, zero break).
+    view.webview.postMessage({ type: 'state', state, url, error, launchInfo: this.runtime.getLaunchInfo() })
     panelLog(`emit state=${state} url=${url ?? 'null'} error=${error ?? 'null'}`)
     if (state === 'ready' && url && url !== this.bakedUrl) {
       // v4: the current html was baked without this url (resolve happened

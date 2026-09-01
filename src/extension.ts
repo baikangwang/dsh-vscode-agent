@@ -1,8 +1,13 @@
 // Extension entry: activation, commands, configuration, panel wiring and the
 // application-level lifecycle hooks (window registration + last-window shutdown).
+// 0.1.9 ADR-22: the ready status bar renders the version segment (via the pure
+// statusLine()), the item command points at dsh.showDetails, and the
+// dsh.details WebviewViewProvider is registered (visibility: collapsed).
 import * as vscode from 'vscode'
 import { DshRuntime } from './runtime'
 import { DshPanel } from './webview'
+import { DshDetailsProvider } from './webviewDetails'
+import { statusLine } from './launchInfo'
 import { ensureDataDir, logFile } from './paths'
 
 let runtime: DshRuntime | null = null
@@ -16,6 +21,7 @@ interface Cfg {
   autoOpenPanel: boolean
   dshHome: string
   probeIntervalSec: number
+  consoleVisible: boolean
 }
 
 function readConfig(): Cfg {
@@ -28,6 +34,11 @@ function readConfig(): Cfg {
     autoOpenPanel: c.get<boolean>('autoOpenPanel', true),
     dshHome: c.get<string>('dshHome', ''),
     probeIntervalSec: c.get<number>('probeIntervalSec', 30),
+    // P-POPUP 方案 B (ADR-20, user ruling 2026-08-29): DEFAULT TRUE — dsh runs
+    // on a visible console so its tool subprocesses share it (no per-call
+    // popup windows); false = fully hidden (the 0.1.7 accepted shape, switch
+    // back once the upstream windowsHide fix lands).
+    consoleVisible: c.get<boolean>('consoleVisible', true),
   }
 }
 
@@ -43,26 +54,38 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     command: cfg.command,
     dshHome: cfg.dshHome,
     probeIntervalSec: cfg.probeIntervalSec,
+    consoleVisible: cfg.consoleVisible,
   })
 
-  // Status bar
+  // Status bar (ADR-22: ready shows 端口 · 版本; click opens the details view)
   statusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100)
-  statusItem.command = 'dsh.open'
+  statusItem.command = 'dsh.showDetails'
   context.subscriptions.push(statusItem)
   const updateStatus = (): void => {
     if (!runtime || !statusItem) return
+    const info = runtime.getLaunchInfo()
     switch (runtime.state) {
-      case 'ready':
-        statusItem.text = `$(circle-filled) DSH ${runtime.port ?? ''}`
-        statusItem.tooltip = `dsh web · ${runtime.url}\n日志：${logFile()}\n(${runtime.managedBy ?? 'unknown'}：stop/restart 不关停 dsh)`
+      case 'ready': {
+        // Version segment = self-reported primary, resolver fallback; BOTH
+        // missing → no version segment (never a misleading placeholder, H1).
+        const version = info?.dshVersion ?? info?.resolverVersion ?? null
+        statusItem.text = statusLine('ready', runtime.port, version)
+        const tip = [`dsh web · ${runtime.url ?? ''}`]
+        if (info?.dshVersion) tip.push(`版本：v${info.dshVersion}（自报）`)
+        if (info?.resolverVersion) tip.push(`版本：v${info.resolverVersion}（bin 目录）`)
+        if (info?.binDir) tip.push(`bin：${info.binDir}`)
+        tip.push(`日志：${logFile()}`)
+        tip.push(`(${runtime.managedBy ?? 'unknown'}：stop/restart 不关停 dsh；点击查看 dsh 详情)`)
+        statusItem.tooltip = tip.join('\n')
         statusItem.show()
         break
+      }
       case 'starting':
-        statusItem.text = '$(sync~spin) DSH starting…'
+        statusItem.text = statusLine('starting', null, null)
         statusItem.show()
         break
       case 'error':
-        statusItem.text = '$(error) DSH error'
+        statusItem.text = statusLine('error', null, null)
         statusItem.tooltip = runtime.errorMessage ?? undefined
         statusItem.show()
         break
@@ -72,10 +95,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   }
   runtime.on('state', updateStatus)
 
-  // Panel (right side bar)
+  // Panel (right side bar) + details view (ADR-22, both in dsh-viewContainer)
   const panel = new DshPanel(runtime)
+  const details = new DshDetailsProvider(runtime)
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(DshPanel.viewId, panel, {
+      webviewOptions: { retainContextWhenHidden: false },
+    }),
+    vscode.window.registerWebviewViewProvider(DshDetailsProvider.viewId, details, {
       webviewOptions: { retainContextWhenHidden: false },
     }),
   )
@@ -84,6 +111,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(
     vscode.commands.registerCommand('dsh.open', async () => {
       await openPanel()
+    }),
+    vscode.commands.registerCommand('dsh.showDetails', async () => {
+      // ADR-22 (0.1.9): reveal the dsh.details webview view — focus command
+      // first (auto-registered per view id), then the container, then a bare
+      // auxiliary-bar toggle.
+      await showDetails()
     }),
     vscode.commands.registerCommand('dsh.restart', async () => {
       // Reconnect semantics (P0-D): never kills dsh; re-discover/adopt/launch.
@@ -153,6 +186,21 @@ async function openPanel(): Promise<void> {
     await vscode.commands.executeCommand('workbench.view.extension.dsh-viewContainer')
   } catch {
     await vscode.commands.executeCommand('workbench.action.toggleAuxiliaryBar')
+  }
+}
+
+async function showDetails(): Promise<void> {
+  // ADR-22: focus the details view itself (expands the secondary sidebar
+  // container without hiding the main panel — H4); double-level fallback for
+  // focus-command drift across VSCode versions.
+  try {
+    await vscode.commands.executeCommand('dsh.details.focus')
+  } catch {
+    try {
+      await vscode.commands.executeCommand('workbench.view.extension.dsh-viewContainer')
+    } catch {
+      await vscode.commands.executeCommand('workbench.action.toggleAuxiliaryBar')
+    }
   }
 }
 

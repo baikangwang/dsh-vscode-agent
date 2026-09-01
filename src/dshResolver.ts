@@ -20,7 +20,7 @@
 import { spawn } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { appendDecisionLog, runtimeMetaFile } from './paths'
+import { appendDecisionLog, dshLogMarkerFile, MARKER_SUFFIX_RESOLVER, runtimeMetaFile } from './paths'
 
 /** Package identity — single source; dshProcess.ts imports this (去散字面量). */
 export const DSH_PKG = '@deepseek-ai/dsh'
@@ -240,6 +240,17 @@ function readMeta(channel: string): RuntimeMeta {
   }
 }
 
+/**
+ * Read-only reuse of the internal meta reader (ADR-22 #29, 0.1.9): the
+ * channel-level freshness meta ({ lastCheckAt, knownVersion }) is a programmatic
+ * source for the launchInfo snapshot (§4.7.2 — lastCheckAt 的程序化读取点 = meta
+ * 文件，runtime.log 仅为诊断轨迹). No write path is exposed; channel-level data
+ * is instance-independent (readable even for re-adopt / external snapshots).
+ */
+export function readRuntimeMeta(channel: string): { lastCheckAt?: string; knownVersion?: string } {
+  return readMeta(channel)
+}
+
 /** Write ONLY { lastCheckAt, knownVersion } — metadata, never a package install. */
 function writeMeta(channel: string, knownVersion: string): void {
   try {
@@ -280,9 +291,26 @@ interface RunResult {
 }
 
 /**
- * Run one bounded child process (windowsHide, stdout/stderr -> logFile).
- * Async spawn (F-03 — never blocks the event loop); hard timeout kills the
- * child and resolves { code: null }. Never throws.
+ * ADR-25-③ (#55-②③, 0.1.12): resolver child-process output goes to the
+ * SIBLING file `<logFile>.resolver` — NEVER into the per-launch dsh log.
+ * R3 evidence: the npm view version token landed in the dsh log HEAD and was
+ * misread as the dsh self-reported version (the 11B false clue +
+ * parseSelfVersion's first-line bare-version-token misread surface — both
+ * structurally eliminated here). The `.resolver` suffix joins
+ * DSH_LOG_MARKER_SUFFIXES (paths.ts), so the sibling shares the marker
+ * family's rotate-same-batch lifecycle (no independent growth surface).
+ * Resolver evidence stays queryable (headless debugging reads the sibling).
+ */
+function appendToResolverLog(logFile: string | undefined, text: string): void {
+  if (!logFile || logFile.length === 0) return
+  appendToLog(dshLogMarkerFile(logFile, MARKER_SUFFIX_RESOLVER), text)
+}
+
+/**
+ * Run one bounded child process (windowsHide; stdout/stderr -> the
+ * `<logFile>.resolver` sibling, ADR-25-③). Async spawn (F-03 — never blocks
+ * the event loop); hard timeout kills the child and resolves { code: null }.
+ * Never throws.
  */
 function runBounded(exec: string, args: string[], timeoutMs: number, logFile: string | undefined, label: string): Promise<RunResult> {
   return new Promise((resolve) => {
@@ -322,9 +350,9 @@ function runBounded(exec: string, args: string[], timeoutMs: number, logFile: st
     child.stdout?.on('data', (d: Buffer) => {
       const text = String(d)
       out += text
-      appendToLog(logFile, text)
+      appendToResolverLog(logFile, text)
     })
-    child.stderr?.on('data', (d: Buffer) => appendToLog(logFile, String(d)))
+    child.stderr?.on('data', (d: Buffer) => appendToResolverLog(logFile, String(d)))
     child.on('error', (err: Error) => {
       rlog(`${label}: spawn error: ${err.message}`)
       finish(null)

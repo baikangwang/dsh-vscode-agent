@@ -40,16 +40,67 @@ export function logsDir(): string {
 }
 
 /** Keep only the newest N=3 `dsh-*.log` files in the managed-launch log dir
- *  (per-day rotation; prevents log bloat, §9). Never touches dsh.log/runtime.log. */
+ *  (per-day rotation; prevents log bloat, §9). Never touches dsh.log/runtime.log.
+ *
+ *  0.1.11 ADR-24 #45 (§4.9.1): the three-stage launch markers are SIBLING
+ *  files of a per-launch log (`<log>.cmd-start` | `.node-start` | `.node-exit`)
+ *  and share its lifecycle — every marker whose base log is rotated out in
+ *  THIS batch is deleted in the same batch ("纳入同轮转批次", same keep=3
+ *  policy, never an independent growth surface). Cleanup is deliberately
+ *  same-batch only: markers of surviving logs and orphan markers (base already
+ *  gone) are left alone (conservative; no speculative deletes). */
+export const MANAGED_DSH_LOG_RE = /^dsh-\d{8}-\d{6}\.log$/
+
+/** 0.1.11 marker instrumentation (§4.9.1): filename suffixes appended to the
+ *  per-launch log path to form the marker sibling family. Single source shared
+ *  by the payload builder (dshProcess.ts) and the rotation below. */
+export const MARKER_SUFFIX_CMD_START = '.cmd-start'
+export const MARKER_SUFFIX_NODE_START = '.node-start'
+export const MARKER_SUFFIX_NODE_EXIT = '.node-exit'
+/** ADR-25-③ (#55-②③, 0.1.12): resolver child-process output sibling suffix
+ *  (`<log>.resolver`) — keeps the resolver's stdout/stderr (npm view version
+ *  tokens etc.) OUT of the per-launch dsh log (R3's 11B false clue +
+ *  parseSelfVersion first-line misread surface). Same lifecycle as the marker
+ *  family: joins the rotate-same-batch cleanup below (never an independent
+ *  growth surface); resolver evidence stays queryable in the sibling. */
+export const MARKER_SUFFIX_RESOLVER = '.resolver'
+export const DSH_LOG_MARKER_SUFFIXES: readonly string[] = [
+  MARKER_SUFFIX_CMD_START,
+  MARKER_SUFFIX_NODE_START,
+  MARKER_SUFFIX_NODE_EXIT,
+  MARKER_SUFFIX_RESOLVER,
+]
+
+/** Marker sibling path for a per-launch log (§4.9.1: `<LOG><suffix>`). */
+export function dshLogMarkerFile(logFile: string, suffix: string): string {
+  return `${logFile}${suffix}`
+}
+
 export function rotateDshLogs(dir: string, keep = 3): void {
   try {
     const files = fs
       .readdirSync(dir)
-      .filter((f) => /^dsh-\d{8}-\d{6}\.log$/.test(f))
+      .filter((f) => MANAGED_DSH_LOG_RE.test(f))
       .map((f) => ({ f, t: fs.statSync(path.join(dir, f)).mtimeMs }))
       .sort((a, b) => b.t - a.t) // newest first
-    for (const old of files.slice(keep)) {
+    const stale = files.slice(keep)
+    for (const old of stale) {
       fs.unlinkSync(path.join(dir, old.f))
+    }
+    if (stale.length === 0) return
+    // #45: marker siblings of THIS batch's rotated-out logs join the same
+    // batch (lifecycle bound to their base log, §4.9.1).
+    const staleBases = new Set(stale.map((s) => s.f))
+    for (const entry of fs.readdirSync(dir)) {
+      const suffix = DSH_LOG_MARKER_SUFFIXES.find((sfx) => entry.endsWith(sfx))
+      if (suffix === undefined) continue
+      if (staleBases.has(entry.slice(0, entry.length - suffix.length))) {
+        try {
+          fs.unlinkSync(path.join(dir, entry))
+        } catch {
+          /* per-file best-effort */
+        }
+      }
     }
   } catch {
     /* rotation is best-effort */

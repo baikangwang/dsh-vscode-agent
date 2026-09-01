@@ -2,7 +2,7 @@
   "name": "dsh-vscode-agent",
   "displayName": "DSH Panel",
   "description": "DeepSeek Harness 右侧边栏面板：启动/复用 dsh web 并内嵌其 Web UI",
-  "version": "0.1.7",
+  "version": "0.1.12",
   "publisher": "dsh-vscode-agent",
   "private": true,
   "license": "MIT",
@@ -15,7 +15,9 @@
   "activationEvents": [
     "onStartupFinished",
     "onView:dsh.panel",
+    "onView:dsh.details",
     "onCommand:dsh.open",
+    "onCommand:dsh.showDetails",
     "onCommand:dsh.restart",
     "onCommand:dsh.stop",
     "onCommand:dsh.openInBrowser",
@@ -38,6 +40,12 @@
           "type": "webview",
           "id": "dsh.panel",
           "name": "DSH"
+        },
+        {
+          "type": "webview",
+          "id": "dsh.details",
+          "name": "DSH 详情",
+          "visibility": "collapsed"
         }
       ]
     },
@@ -45,6 +53,10 @@
       {
         "command": "dsh.open",
         "title": "DSH: Open Panel"
+      },
+      {
+        "command": "dsh.showDetails",
+        "title": "DSH: Show Details"
       },
       {
         "command": "dsh.restart",
@@ -105,6 +117,11 @@
           "type": "number",
           "default": 30,
           "description": "detached dsh 的存活探活周期（秒；0 = 关闭探活）。dsh 为独立常驻进程，扩展不再监听其 exit，改由周期性 __DSH_BOOT__ 探活判定其生死并（在本窗连接中）受退避上限约束地重拉。"
+        },
+        "dsh.consoleVisible": {
+          "type": "boolean",
+          "default": true,
+          "description": "true = dsh 运行于自持的常驻可见控制台（其全部子进程共享该控制台，结构性零弹窗；该窗口即 dsh 服务窗，关闭窗口 = 停止 dsh，不会自动重拉）；false = 完全隐藏（沙箱面已知闪窗取舍，上游修复 windowsHide 后可切回）。"
         }
       }
     }
