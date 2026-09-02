@@ -21,6 +21,7 @@ import { spawn } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { appendDecisionLog, dshLogMarkerFile, MARKER_SUFFIX_RESOLVER, runtimeMetaFile } from './paths'
+import { normalizeChannel, normalizeChannelLogLine } from './channelSelect'
 
 /** Package identity — single source; dshProcess.ts imports this (去散字面量). */
 export const DSH_PKG = '@deepseek-ai/dsh'
@@ -395,10 +396,19 @@ async function npxChainEstablish(nodeExe: string, npxCliJs: string, channel: str
  * Resolve the dsh bin (design §4.1.2 ①-⑦). Contract: NEVER throws; null means
  * "unresolvable" and the caller (DshProcess) falls back to the untouched 0.1.6
  * `cmd.exe + npx` path (safety net, worst case = 0.1.6 behavior).
+ *
+ * 0.1.14 ADR-29-② 双重防护（第二归一点）：extension readConfig 之外，本入口
+ * 再做一次 legacy/非法通道值归一（防绕过 extension 的无头测试路径直用非法
+ * 值）；`preview`（E404 dist-tag）等非法值 → 'latest' + rlog 留痕；不写回
+ * 任何配置。
  */
 export async function resolveDshBin(channel: string, opts: { force?: boolean; logFile?: string } = {}): Promise<DshBinInfo | null> {
+  const norm = normalizeChannel(channel)
+  if (norm.normalized) {
+    rlog(`resolveDshBin: ${normalizeChannelLogLine(channel, norm.channel)} (entry dual guard)`)
+  }
   try {
-    return await resolveInternal(channel, opts)
+    return await resolveInternal(norm.channel, opts)
   } catch (err) {
     rlog(`resolveDshBin: unexpected error -> null (0.1.6 cmd+npx fallback): ${(err as Error).message}`)
     return null

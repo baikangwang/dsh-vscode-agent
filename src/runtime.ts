@@ -27,14 +27,16 @@ import * as fs from 'node:fs'
 import * as net from 'node:net'
 import {
   acquireStartupLock, dshAlive, isAlive, looksLikeDsh, processCommandLine,
-  readInstance, registerWindow, releaseStartupLock, resolvePortPid, scrubDeadWindowsSync,
-  scrubWindowsWithIdentitySync, unregisterWindow, writeInstance,
+  PROCESS_START_QUERY_TIMEOUT_MS, queryProcessStartTimeSync, readInstance, registerWindow,
+  releaseStartupLock, resolvePortPid, scrubDeadWindowsSync, scrubWindowsWithIdentitySync,
+  unregisterWindow, writeInstance,
   type DshRecord, type IdentityVerdict,
 } from './instance'
-import { DshProcess, START_LAUNCHER_LABEL, probe as dshProbe, treeKill, type SpawnedInfo } from './dshProcess'
+import { DshProcess, START_LAUNCHER_LABEL, judgeContractByVersion, probeDetail, resolveBannerFromLog, treeKill, type ContractTier, type ProbeKind, type SpawnedInfo } from './dshProcess'
 import { readRuntimeMeta, resolveDshBin } from './dshResolver'
 import { buildLaunchInfo, parseSelfVersion, type DshLaunchInfo } from './launchInfo'
 import { appendDecisionLog, LOOPBACK_HOST } from './paths'
+import { mintSessionCookie, readCredentialsSecret, startAuthProxy, type AuthProxyHandle } from './authProxy'
 
 export type ManagedBy = 'extension' | 'external' | 'managed-own'
 
@@ -92,6 +94,24 @@ const T2_IDENTITY_TIMEOUT_MS = 2_000
 const START_LAUNCH_FAIL_LIMIT = 2
 /** Head bytes read from the managed dsh log for the self-reported version. */
 const SELF_VERSION_HEAD_BYTES = 1024
+/**
+ * 0.1.14 §3.5: the INDEPENDENT 401 counter threshold — consecutive
+ * unauthorized probe outcomes (after the ONE session re-establishment) that
+ * end in the error state with the restart guidance. Deliberately isolated
+ * from LIVENESS_FAIL_THRESHOLD (crash backoff) and from the ADR-21 user-stop
+ * arbitration: a 401 means the process is ALIVE but the session is stale.
+ */
+const AUTH_FAIL_THRESHOLD = 3
+/** Error-state guidance copy (§3.5: 「会话失效——请重启服务」). */
+const SESSION_EXPIRED_MESSAGE = 'dsh 会话失效——请重启服务（面板 ⟳ 或命令「DSH: Restart Runtime」；dsh 进程未停止）'
+/**
+ * 0.1.15 #82: the honest-degradation guidance for an adopt session whose C
+ * path is unavailable (credentials unreadable / mint failed / live-verification
+ * rejected). The panel and the details card render it verbatim via the error
+ * state — no proxy, no URL, no pretending the session works.
+ */
+const ADOPT_SESSION_UNAVAILABLE_MESSAGE =
+  '该 dsh 实例无法建立面板会话（无 banner token 且凭证不可用）——请重启该 dsh 后由面板接管首启（可自动获取 token）；并请核对 dsh.dshHome 配置与该实例实际的 DSH_HOME 是否一致。'
 
 /** Append a decision-trace line to logs/runtime.log (diagnostics only; never throws). */
 function rlog(msg: string): void {
@@ -114,6 +134,7 @@ export function portBindable(port: number): Promise<boolean> {
 
 export type RuntimeState =
   | 'idle'
+  | 'awaitingChannel' // 0.1.15 #83 (ADR-31): parked for the panel channel-pick card; start() runs only after the pick
   | 'starting'
   | 'ready'        // connected to a dsh web instance (managed-own, extension or external)
   | 'error'
@@ -154,6 +175,13 @@ export interface RuntimeOptions {
    * resolution. Defaults to the real `resolvePortPid` (netstat).
    */
   resolvePortPidFn?: (port: number) => { pid: number; address: string } | null
+  /**
+   * 0.1.16 #97 (ADR-40) injection seam (identityCheck / resolvePortPidFn
+   * same shape): the process start-time query used by writeRegistry's fresh
+   * branch. Default = the real `queryProcessStartTimeSync` (Get-Process
+   * StartTime, G3 shape); headless tests inject a mock (PP-12-4).
+   */
+  processStartQuery?: (pid: number) => string | null
 }
 
 export class DshRuntime extends EventEmitter {
@@ -190,6 +218,23 @@ export class DshRuntime extends EventEmitter {
   private externalCommandLine: string | null = null
   /** ADR-22: the last assembled DshLaunchInfo snapshot (null = never assembled). */
   private launchInfoSnapshot: DshLaunchInfo | null = null
+  // ---- 0.1.14 ADR-30 state (all memory-only; D3: NOTHING here is persisted) ----
+  /** Contract tier of the RUNNING dsh, judged from the resolver version (§3.3). */
+  private contract: ContractTier = 'unknown'
+  /** T-path session source: the banner token of the current launch (or null). */
+  private authToken: string | null = null
+  /** The banner-authenticated URL (token contract, T path) for openInBrowser; null = legacy/degraded. */
+  // Public: extension.ts openInBrowser sends the banner-authenticated URL
+  // (token contract) or the bare url (legacy) — same redaction at the log seam.
+  externalUrl: string | null = null
+  /** The local authProxy handle (token contract sessions); null = direct. */
+  private proxy: AuthProxyHandle | null = null
+  /** C-path self-minted session cookie (`dsh-auth-…=v1.…`), memory-only. */
+  private sessionCookie: string | null = null
+  /** §3.5: the ONE session re-establishment already spent for this attachment. */
+  private sessionRetried = false
+  /** §3.5: the independent 401 counter (isolated from probeFailures / ADR-21). */
+  private authFailures = 0
 
   constructor(options: RuntimeOptions) {
     super()
@@ -251,6 +296,9 @@ export class DshRuntime extends EventEmitter {
         managedBy: this.managedBy,
         channel: this.options.channel,
         externalCommandLine: this.externalCommandLine,
+        // 0.1.14 第 16 个可选字段：token 契约档（T 路径）的带 token 直达 URL；
+        // legacy/降级快照恒 null（null = 旧契约，既有 15 字段消费者零破坏）。
+        externalUrl: managed ? this.externalUrl : null,
         launchLogFile: managed ? logFile : null,
         degraded: !managed,
         degradedLaunchMode: args.kind === 'user-stop' ? 'start' : args.kind === 'disconnect' ? null : undefined,
@@ -262,6 +310,35 @@ export class DshRuntime extends EventEmitter {
   }
 
   // ------------------------------------------------------------ lifecycle
+
+  /**
+   * 0.1.15 #83 (ADR-31): park this runtime in the awaitingChannel state — the
+   * panel renders the channel-pick card and start() runs ONLY after the pick
+   * writes `dsh.channel` + `dsh.channelSelected` (先选后启: start strictly
+   * AFTER the writes; the runtime instance is constructed beforehand — the
+   * QuickPick-before-construction ordering premise was disproven).
+   */
+  enterAwaitingChannel(): void {
+    rlog('channel: awaiting the panel channel pick (dsh.channelSelected=false); start() deferred (#83 ADR-31)')
+    this.setState('awaitingChannel')
+  }
+
+  /**
+   * 0.1.15 #83/#84: apply a channel selection to this runtime instance. The
+   * next start()/reconnect() launches with it. Without this the config write
+   * alone would NOT reach the launch chain (options.channel is the
+   * construction-time snapshot — the 0.1.14 「重启生效」 hint was structurally
+   * untruthful; minimal correctness completion, see the #86 note).
+   */
+  setChannel(channel: string): void {
+    this.options.channel = channel
+    rlog(`channel: runtime channel updated to '${channel}' (panel flow; takes effect on the next start/restart)`)
+  }
+
+  /** 0.1.15 #87: the judged contract tier of the running dsh (openInBrowser gate). */
+  get contractTier(): ContractTier {
+    return this.contract
+  }
 
   /** Called once per extension activation: re-adopt / adopt / managed-launch. */
   async start(): Promise<void> {
@@ -281,17 +358,33 @@ export class DshRuntime extends EventEmitter {
     this.lastResolved = null
     this.lastLaunchLogFile = null
     this.externalCommandLine = null
+    // 0.1.14 ADR-30 per-attach reset: the previous attachment's proxy/session
+    // facts must never leak (a fresh managed launch re-judges the contract).
+    this.contract = 'unknown'
+    this.authToken = null
+    this.externalUrl = null
+    this.sessionCookie = null
+    this.sessionRetried = false
+    this.authFailures = 0
+    this.stopProxy()
     this.setState('starting')
     rlog(`start: window ${this.options.windowPid} (port=${this.options.port} channel=${this.options.channel} command=${this.options.command || '<npx>'})`)
 
     // 1. Registry: a live managed-own/extension/external dsh we already know?
     const inst = readInstance()
     const registryAlive = dshAlive(inst)
-    const registryProbed = registryAlive && inst.dsh ? await this.probe(inst.dsh.port) : false
-    rlog(`step1 registry: dsh=${JSON.stringify(inst.dsh)} alive=${registryAlive} probe=${registryProbed}`)
+    // 0.1.14 判定表 #3 行: an unauthorized answer is still PROOF the service
+    // is alive (401 = runtime auth fact) — the record stays adoptable and the
+    // probeTick 401 diversion (C path) establishes the session afterwards.
+    // `down` keeps the pre-0.1.14 not-adoptable verdict (zero regression).
+    const registryProbeKind = registryAlive && inst.dsh ? (await this.probeState(inst.dsh.port)).kind : 'down'
+    const registryProbed = registryProbeKind !== 'down'
+    rlog(`step1 registry: dsh=${JSON.stringify(inst.dsh)} alive=${registryAlive} probe=${registryProbed}${registryProbeKind === 'unauthorized' ? ' (401: alive, session required — adopting, C path will follow)' : ''}`)
     if (registryAlive && registryProbed && inst.dsh) {
       // Re-adopt the still-resident detached dsh (F1 / P0-H): no spawn.
-      this.adopt(inst.dsh.port, inst.dsh.pid, inst.dsh.managedBy)
+      // 0.1.15 #81: the step1 probe result rides along — the session settles
+      // inside adopt() (C path front-load / legacy direct) BEFORE ready.
+      await this.adopt(inst.dsh.port, inst.dsh.pid, inst.dsh.managedBy, registryProbeKind)
       await this.writeRegistry()
       this.startProbe()
       return
@@ -302,8 +395,11 @@ export class DshRuntime extends EventEmitter {
 
     // 2. Probe the configured port for an external instance.
     const probePort = this.options.port > 0 ? this.options.port : 0
-    const probeOk = probePort > 0 ? await this.probe(probePort) : false
-    rlog(`step2 probe(port=${probePort})=${probeOk}`)
+    // 0.1.14: 401-aware like step1 — an external token-contract instance
+    // answers 401 to the bare probe (RV-15-4 C path); alive ≠ dead.
+    const probeKind = probePort > 0 ? await this.probeState(probePort) : null
+    const probeOk = probeKind !== null && probeKind.kind !== 'down'
+    rlog(`step2 probe(port=${probePort})=${probeOk}${probeKind?.kind === 'unauthorized' ? ' (401: alive, session required)' : ''}`)
     if (probeOk) {
       const holder = resolvePortPid(probePort)
       rlog(`step2 resolvePortPid(${probePort})=${JSON.stringify(holder)}`)
@@ -332,7 +428,8 @@ export class DshRuntime extends EventEmitter {
               `step2 residual migration: adopted 0.1.6 residual as managed-own ` +
                 `(registered pid ${rec.pid ?? 'null'} dead, live dsh holder ${holder.pid} on registered port ${probePort}, dsh signature matched)`,
             )
-            this.adopt(probePort, holder.pid, 'managed-own')
+            // 0.1.15 #81: probeKind rides along (QA r1 MINOR-1 — all 4 call sites).
+            await this.adopt(probePort, holder.pid, 'managed-own', probeKind?.kind ?? null)
             await this.writeRegistry()
             this.startProbe()
             return
@@ -346,7 +443,8 @@ export class DshRuntime extends EventEmitter {
           rlog('step2 CIM unavailable; recording holder pid on page-signature basis')
         }
       }
-      this.adopt(probePort, pid, 'external')
+      // 0.1.15 #81: probeKind rides along — the session settles inside adopt().
+      await this.adopt(probePort, pid, 'external', probeKind?.kind ?? null)
       await this.writeRegistry()
       this.startProbe()
       return
@@ -413,10 +511,28 @@ export class DshRuntime extends EventEmitter {
         this.lastResolved = info.resolved
         this.lastLaunchLogFile = info.logFile
         this.port = info.port
-        this.url = info.url
+        // 0.1.15 #80①: `this.url` is assigned ONLY at the session settle point
+        // (applyContractOnLaunch below: proxy URL for token sessions, the bare
+        // URL for the legacy/unknown direct tier). Starting holds with url=null
+        // — the ready first frame is always the FINAL url (no mid-flight
+        // address updates; user ruling v1.3).
         this.managedBy = 'managed-own'
         this.launchAttempts = 0
         this.startLaunchFailures = 0 // §4.6.3: any success resets the fallback counter
+        // 0.1.14 ADR-30 (§3.3 判定链): version-threshold contract judgement on
+        // the RUNNING version (SpawnedInfo.resolved.version — the dual-end
+        // single source; banner capture stays the token-VALUE source only),
+        // then the tier's surface (proxy / externalUrl / token rlog trace).
+        // Runs BEFORE writeRegistry/setState so the first ready snapshot and
+        // the registry-era launchInfo already carry the final url shape.
+        this.contract = judgeContractByVersion(info.resolved?.version ?? null)
+        this.authToken = info.authToken
+        this.externalUrl = null
+        rlog(
+          `launchManaged: contract judged '${this.contract}' ` +
+            `(running version = ${info.resolved?.version ?? 'unavailable'}, threshold = version-anchored; banner token ${info.authToken !== null ? 'captured (token=<REDACTED>)' : 'absent'})`,
+        )
+        await this.applyContractOnLaunch()
         await this.writeRegistry('managed')
         this.setState('ready')
         this.startProbe()
@@ -481,9 +597,183 @@ export class DshRuntime extends EventEmitter {
       : 'direct'
   }
 
-  private adopt(port: number, pid: number | null, managedBy: ManagedBy): void {
+  // ------------------------------------------------ 0.1.14 ADR-30 surface
+
+  /**
+   * Apply the judged contract tier on a successful managed launch (§3.3 判定表;
+   * all state changes happen BEFORE the caller writes the registry). This is
+   * ALSO the managed-side URL settle point (#80① — the former L464 eager
+   * `this.url = info.url` moved here):
+   *  #1 token    : banner token in hand → T-path proxy + externalUrl; the
+   *                 panel url becomes the proxy URL (iframe 语义 §3.4).
+   *  #2 legacy   : bare URL, direct — 0.1.13 behavior BIT-IDENTICAL (#2 行).
+   *  #4 矛盾态 A : banner has a token but version < V* → defensively align to
+   *                 the token contract (start the proxy) + WARN BOTH FACTS.
+   *  #5 矛盾态 B : version ≥ V* but no banner token → keep the version-side
+   *                 verdict, fall back to the C path (self-minted cookie) with
+   *                 the ADR-32 ONE live verification; on any C failure the
+   *                 surface stays URL-less (no proxy, no fake session) and the
+   *                 existing 401 diversion owns the retry (#82).
+   *  #3 unknown  : direct start (latest takeover zero-regression); the
+   *                 probeTick 401 diversion upgrades to a C-path proxy later.
+   */
+  private async applyContractOnLaunch(): Promise<void> {
+    if (this.port === null) return
+    if (this.contract === 'token') {
+      if (this.authToken !== null) {
+        // #1 行 (and #4 行 handles itself below when the token exists).
+        this.externalUrl = `http://${LOOPBACK_HOST}:${this.port}/?token=${this.authToken}`
+        await this.establishProxy({ token: this.authToken })
+        return
+      }
+      // #5 行 (矛盾态 B): version ≥ V* but no banner token.
+      rlog(
+        `WARN contract: contradictory facts — version ${this.lastResolved?.version ?? 'n/a'} ≥ threshold but the banner carries NO token ` +
+          `(judgement table #5): keeping the version-side token contract, C-path session fallback (rlog both facts)`,
+      )
+      const cookie = this.mintCookieFromCredentials()
+      if (cookie !== null) {
+        this.sessionCookie = cookie
+        // ADR-32: ONE live verification before any proxy surface (#81 判据).
+        if (await this.liveVerifySession()) {
+          rlog('C path: minted cookie live-verified')
+          if (await this.establishProxy({ cookie })) return
+          rlog('contract: proxy start failed after a live-verified cookie; no URL — the 401 diversion owns the retry')
+          return
+        }
+        rlog('C path: minted cookie rejected by live upstream; no proxy, no URL — the 401 diversion owns the retry')
+        this.sessionCookie = null
+        return
+      }
+      rlog('contract: C-path session unavailable (credentials unreadable or mint failed); no URL — the 401 diversion owns the retry')
+      return
+    }
+    if (this.contract === 'legacy' && this.authToken !== null) {
+      // #4 行 (矛盾态 A): token banner on a sub-threshold version.
+      rlog(
+        `WARN contract: contradictory facts — banner HAS a token but version ${this.lastResolved?.version ?? 'n/a'} < threshold ` +
+          `(judgement table #4): defensively aligning to the token contract (proxy up), rlog both facts`,
+      )
+      this.externalUrl = `http://${LOOPBACK_HOST}:${this.port}/?token=${this.authToken}`
+      await this.establishProxy({ token: this.authToken })
+      return
+    }
+    // #2 legacy direct / #3 unknown direct — the URL settles at the bare value
+    // here (managed-side #80①; the sim PP-8-6④ bare-URL equality holds).
+    this.url = `http://${LOOPBACK_HOST}:${this.port}`
+  }
+
+  /**
+   * Start (or restart) the local authProxy for the current port. The panel
+   * url becomes the proxy URL on success (bakedUrl re-bake machinery in the
+   * webview picks the new same-shaped URL up). Previous proxy is stopped
+   * first (R9 lifecycle; token rotation = new proxy with the new session).
+   */
+  private async establishProxy(session: { token?: string | null; cookie?: string | null }): Promise<boolean> {
+    this.stopProxy()
+    if (this.port === null) return false
+    try {
+      const handle = await startAuthProxy(this.port, { token: session.token ?? null, cookie: session.cookie ?? null }, { log: rlog })
+      this.proxy = handle
+      this.url = `http://${LOOPBACK_HOST}:${handle.port}`
+      rlog(`authProxy: panel url switched to ${this.url} (upstream ${LOOPBACK_HOST}:${this.port}; iframe CSP unchanged — same ${LOOPBACK_HOST}:* host-source)`)
+      return true
+    } catch (err) {
+      rlog(`authProxy: start failed (${(err as Error).message}); keeping the direct surface`)
+      return false
+    }
+  }
+
+  /** C path (§3.7): self-mint the session cookie from the dsh credentials file. */
+  private mintCookieFromCredentials(): string | null {
+    const secret = readCredentialsSecret(this.options.dshHome)
+    if (secret === null) {
+      rlog('C path: `<DSH_HOME>/.credentials.yaml` secret unreadable (file missing or record malformed)')
+      return null
+    }
+    if (this.port === null) return null
+    const cookie = mintSessionCookie(secret, `${LOOPBACK_HOST}:${this.port}`)
+    if (cookie === null) {
+      rlog('C path: session cookie mint failed (secret/authority malformed)')
+      return null
+    }
+    rlog('C path: session cookie self-minted from the persistent secret (memory-only; file read-only, never written back)')
+    return cookie
+  }
+
+  /** R9: stop and drop the proxy handle (idempotent; every state landing calls this). */
+  private stopProxy(): void {
+    if (this.proxy !== null) {
+      try {
+        this.proxy.stop()
+      } catch {
+        /* best-effort */
+      }
+      this.proxy = null
+    }
+  }
+
+  /**
+   * §3.5: the single session re-establishment for this attachment — re-capture
+   * the banner token (managed log) and rebuild the proxy; with no usable
+   * banner token fall back to the C path. Returns whether a NEW session
+   * surface was established (the next probe tick verifies it).
+   */
+  private async reestablishSession(): Promise<boolean> {
+    if (this.lastLaunchLogFile !== null) {
+      const banner = resolveBannerFromLog(this.lastLaunchLogFile)
+      if (banner !== null && banner.token !== null && banner.token !== this.authToken && this.port === banner.port) {
+        rlog('session re-establishment: NEW banner token captured (token=<REDACTED>); rebuilding the proxy (token rotation)')
+        this.authToken = banner.token
+        this.externalUrl = `http://${LOOPBACK_HOST}:${this.port}/?token=${this.authToken}`
+        return this.establishProxy({ token: this.authToken })
+      }
+    }
+    rlog('session re-establishment: no fresh banner token; falling back to the C path (self-minted session)')
+    const cookie = this.mintCookieFromCredentials()
+    if (cookie === null) return false
+    this.sessionCookie = cookie
+    return this.establishProxy({ cookie })
+  }
+
+  /**
+   * The single probe SOURCE with tri-state semantics (§3.5): form selection —
+   * token tier + banner token → token-303; a HELD C-path session (token-tier
+   * #5 fallback OR the post-diversion #3/#4 C-path upgrade) → cookie probe;
+   * otherwise bare GET (legacy/unknown before any session; a 401 answer still
+   * surfaces as 'unauthorized' so the diversion can act). The cookie form
+   * applies ACROSS tiers once a session is held: after the diversion upgrades
+   * a legacy/unknown attachment to a C-path proxy, the bare form would 401
+   * forever (panel usable while the runtime falsely errors) — the cookie probe
+   * verifies the session the panel actually uses.
+   */
+  private async probeState(port: number): Promise<{ kind: ProbeKind }> {
+    if (this.contract === 'token' && this.authToken !== null) return probeDetail(port, { token: this.authToken })
+    if (this.sessionCookie !== null) return probeDetail(port, { cookie: this.sessionCookie })
+    return probeDetail(port)
+  }
+
+  /**
+   * 0.1.15 #80①/#81 (judgement table #6; ADR-32/33): the adopt landing point
+   * now SETTLES THE SESSION before any ready emit — `this.url` stays null
+   * during `starting` and is assigned only here, once:
+   *  - probe 401 ('unauthorized') = live auth fact → token contract (ADR-33,
+   *    never a guessed version) → C path front-loaded: mint from credentials →
+   *    ONE live verification GET → 200: establishProxy BEFORE setState('ready')
+   *    (the ready first frame IS the final proxy URL — no 401 flash, no re-bake
+   *    race) + rlog `C path: minted cookie live-verified`;
+   *    401/verification rejected: NO proxy, NO url + rlog `C path: minted
+   *    cookie rejected by live upstream` → setState('error') with the #82
+   *    guidance (honest degradation — never pretend a session works);
+   *  - probe 200 → legacy direct (the settled url = the bare URL) — zero
+   *    regression for the pre-0.1.14 contract;
+   *  - defensive null/down (unreachable via the step1/2/4 gates) → direct +
+   *    rlog, contract stays 'unknown'.
+   * The former bare-URL eager assignment + eager `setState('ready')` (0.1.14
+   * L691/L699) are GONE — starting holds until the session settles (#80①).
+   */
+  private async adopt(port: number, pid: number | null, managedBy: ManagedBy, probeKind: ProbeKind | null): Promise<void> {
     this.port = port
-    this.url = `http://${LOOPBACK_HOST}:${port}`
     this.managedBy = managedBy
     this.dshPid = pid
     // ADR-22: assemble the snapshot BEFORE the ready-state emit so subscribers
@@ -491,8 +781,74 @@ export class DshRuntime extends EventEmitter {
     // call site) re-assembles with the authoritative fresh record. rec = null:
     // the pre-write record would be stale (external/migration adopts).
     this.refreshLaunchInfo({ kind: 'adopt', rec: null })
+    rlog(`adopt: ${managedBy} dsh at http://${LOOPBACK_HOST}:${port} (pid ${pid ?? 'null'}; probe=${probeKind ?? 'null'}) — url withheld until the session settles (#80: starting holds; ready first frame = final URL)`)
+    if (probeKind === 'unauthorized') {
+      // 401 = the process is alive and demands a session → token contract by
+      // the LIVE auth fact (judgement table #6; ADR-33).
+      this.contract = 'token'
+      const cookie = this.mintCookieFromCredentials()
+      if (cookie === null) {
+        rlog('adopt C path: credentials unreadable or mint failed (#82 honest degradation: no proxy, no URL)')
+        this.enterSessionUnavailable()
+        return
+      }
+      this.sessionCookie = cookie
+      // ADR-32: ONE live verification of the self-minted cookie BEFORE any
+      // proxy/ready surface (single read-only GET, same permission face as the
+      // existing probe).
+      if (!(await this.liveVerifySession())) {
+        rlog('C path: minted cookie rejected by live upstream (#82 honest degradation: no proxy, no URL)')
+        this.sessionCookie = null
+        this.enterSessionUnavailable()
+        return
+      }
+      rlog('C path: minted cookie live-verified')
+      if (!(await this.establishProxy({ cookie }))) {
+        rlog('adopt C path: proxy start failed after a live-verified cookie (#82 honest degradation: no URL)')
+        this.sessionCookie = null
+        this.enterSessionUnavailable()
+        return
+      }
+      // ready first frame = final proxy URL (establishProxy already assigned
+      // this.url; PP-10-2 order: probe → mint → live GET → establishProxy → ready).
+      this.setState('ready')
+      return
+    }
+    // probe 200 → legacy direct (judgement table #6: bare probe 200 = legacy
+    // contract; the settled url = the bare URL — pre-0.1.14 behavior, zero
+    // regression). Defensive null/down keeps the direct surface + honest log.
+    if (probeKind !== 'ok') {
+      rlog(`adopt: probe=${probeKind ?? 'null'} reached the settle point (unreachable via the step gates); direct surface as the safe side`)
+    } else {
+      this.contract = 'legacy'
+    }
+    this.url = `http://${LOOPBACK_HOST}:${port}`
     this.setState('ready')
-    rlog(`adopt: ${managedBy} dsh at ${this.url} (pid ${pid ?? 'null'})`)
+    rlog(`adopt: direct legacy surface settled at ${this.url} (probe=${probeKind ?? 'null'})`)
+  }
+
+  /**
+   * 0.1.15 #82: the one-shot honest-degradation landing — no proxy, no URL
+   * (the panel renders no address), error state with the restart guidance
+   * copy. The subsequent reconnect() re-runs the full adopt settle.
+   */
+  private enterSessionUnavailable(): void {
+    this.stopProxy()
+    this.errorMessage = ADOPT_SESSION_UNAVAILABLE_MESSAGE
+    this.setState('error')
+    this.emit('error', this.errorMessage)
+  }
+
+  /**
+   * ADR-32 (#80③/#81): ONE live verification of the currently held session
+   * facts (token-303 form when a banner token is in hand, cookie form when a
+   * C-path session is held — probeState picks the form). Read-only GET, same
+   * permission face as the existing probe.
+   */
+  private async liveVerifySession(): Promise<boolean> {
+    if (this.port === null) return false
+    const outcome = await this.probeState(this.port)
+    return outcome.kind === 'ok'
   }
 
   /**
@@ -521,6 +877,26 @@ export class DshRuntime extends EventEmitter {
     const inst = scrubbed.inst
     const prev = inst.dsh
     const keepDshStartedAt = prev !== null && this.dshPid !== null && prev.pid === this.dshPid
+    // 0.1.16 #97 (ADR-40): processStartedAt — keep semantics shared with
+    // startedAt/launchMode: the process creation instant is IMMUTABLE, so a
+    // same-pid re-write reuses the recorded value with ZERO queries. A record
+    // without the field (pre-0.1.16) re-queries once (self-healing, §3.5-5);
+    // a fresh pid queries exactly once (bounded 5s cap). A null query result
+    // (failure / timeout / non-win32 / no resolved pid) OMITS the field — the
+    // flow never breaks and the card shows 未知 (never falls back to
+    // startedAt, ADR-40④: two semantics must not re-mix in one cell).
+    // Default seam = the real query with its DESIGN BUDGET (5s cap, §3.5-2);
+    // the one-arg processStartQuery contract stays the injection surface.
+    const processStartQuery = this.options.processStartQuery ??
+      ((pid: number) => queryProcessStartTimeSync(pid, PROCESS_START_QUERY_TIMEOUT_MS))
+    let processStartedAt: string | undefined
+    if (keepDshStartedAt && prev !== null && typeof prev.processStartedAt === 'string') {
+      processStartedAt = prev.processStartedAt
+    } else if (this.dshPid !== null) {
+      const queried = processStartQuery(this.dshPid)
+      if (queried !== null) processStartedAt = queried
+      else rlog(`writeRegistry: processStartedAt query failed (pid ${this.dshPid}) — record omits the field (card shows 未知; ADR-40)`)
+    }
     inst.dsh = {
       pid: this.dshPid ?? null,
       port: this.port ?? this.options.port,
@@ -530,6 +906,9 @@ export class DshRuntime extends EventEmitter {
       // on re-adopt; absent (JSON-dropped undefined) for external/old records
       // (= direct semantics, backward compatible).
       launchMode: keepDshStartedAt && prev !== null ? prev.launchMode : (this.lastLaunchMode ?? undefined),
+      // 0.1.16 #97 (ADR-40): see the block above — keep-reuse / fresh
+      // query-once / failure omits the field (undefined is JSON-dropped).
+      processStartedAt,
     }
     writeInstance(registerWindow(inst, this.options.app, this.options.windowPid))
     rlog(`writeRegistry: dsh=${JSON.stringify(inst.dsh)} +window ${this.options.windowPid}`)
@@ -568,8 +947,11 @@ export class DshRuntime extends EventEmitter {
     while (Date.now() < deadline) {
       const inst = readInstance()
       const port = inst.dsh?.port ?? probePort
-      if (inst.dsh && port > 0 && await this.probe(port)) {
-        this.adopt(port, inst.dsh.pid, inst.dsh.managedBy)
+      // 0.1.14: 401-aware (alive verdict) — same rationale as step1/step2.
+      const state = port > 0 ? await this.probeState(port) : null
+      if (inst.dsh && state !== null && state.kind !== 'down') {
+        // 0.1.15 #81: the step4 probe result rides along (waiting scenario).
+        await this.adopt(port, inst.dsh.pid, inst.dsh.managedBy, state.kind)
         await this.writeRegistry()
         this.startProbe()
         return true
@@ -581,9 +963,12 @@ export class DshRuntime extends EventEmitter {
 
   // ------------------------------------------------------------ probes
 
-  /** GET / on the port returns the DSH bootstrap page (single probe source). */
+  /**
+   * GET / on the port answers with the DSH bootstrap page (boolean view of the
+   * tri-state probe source; kept for existing callers/readability).
+   */
   async probe(port: number): Promise<boolean> {
-    return dshProbe(port)
+    return (await this.probeState(port)).kind === 'ok'
   }
 
   // ------------------------------------------------------------ liveness (P0-C)
@@ -610,9 +995,57 @@ export class DshRuntime extends EventEmitter {
 
   private async probeTick(): Promise<void> {
     if (this.state !== 'ready' || this.port === null) return
-    const alive = await this.probe(this.port)
-    if (alive) {
+    const outcome = await this.probeState(this.port)
+    if (outcome.kind === 'ok') {
       this.probeFailures = 0
+      this.authFailures = 0
+      return
+    }
+    if (outcome.kind === 'unauthorized') {
+      // 0.1.14 §3.5 401 diversion: 401 = the process is ALIVE but the session
+      // is stale (token rotation / external instance). This is deliberately
+      // ISOLATED from the crash-backoff counter (probeFailures) AND from the
+      // ADR-21 user-stop arbitration — the false user-stop misfire risk of
+      // probing a token contract with a bare GET is structurally eliminated.
+      // ONE re-establishment per attachment; afterwards each 401 counts in the
+      // independent authFailures; ×3 → error state with the restart guidance
+      // (NO auto relaunch, NO loop).
+      // 0.1.15 #80③: the re-establishment is now a VISIBLE transition —
+      // ready → setState('starting') (the panel returns to the neutral page;
+      // no URL render) → rebuild + ONE live verification (ADR-32, same
+      // criteria as #81) → ready ONCE (first frame = the new URL) +
+      // startProbe() re-armed; verification rejected / rebuild failed →
+      // setState('error') with the #82 guidance. No mid-flight address
+      // updates — the final info renders exactly once per conversion.
+      if (!this.sessionRetried) {
+        this.sessionRetried = true
+        rlog('probe: 401 (service alive, session invalid); single session re-establishment (banner re-capture → C path) — visible transition ready->starting (#80③)')
+        this.setState('starting')
+        const rebuilt = await this.reestablishSession()
+        if (!rebuilt) {
+          rlog('probe: session re-establishment failed → error with the #82 guidance')
+          this.enterSessionUnavailable()
+          return
+        }
+        if (await this.liveVerifySession()) {
+          this.setState('ready') // new-URL first frame
+          this.startProbe()      // re-arm the liveness probe
+          return
+        }
+        rlog('probe: re-established session rejected by live upstream → error with the #82 guidance')
+        this.sessionCookie = null
+        this.enterSessionUnavailable()
+        return
+      }
+      this.authFailures += 1
+      rlog(`probe: 401 persists after re-establishment (auth failure ${this.authFailures}/${AUTH_FAIL_THRESHOLD}; crash backoff and user-stop arbitration NOT involved)`)
+      if (this.authFailures >= AUTH_FAIL_THRESHOLD && this.state === 'ready') {
+        this.errorMessage = SESSION_EXPIRED_MESSAGE
+        this.stopProxy()
+        this.stopProbe()
+        this.setState('error')
+        this.emit('error', this.errorMessage)
+      }
       return
     }
     this.probeFailures += 1
@@ -640,6 +1073,7 @@ export class DshRuntime extends EventEmitter {
         this.dshPid = null
         this.port = null
         this.url = null
+        this.stopProxy()
         this.stopProbe()
         this.setState('stopped')
         return
@@ -653,6 +1087,7 @@ export class DshRuntime extends EventEmitter {
       this.dshPid = null
       this.port = null
       this.url = null
+      this.stopProxy()
       this.setState('starting')
       void this.launchManaged()
     }
@@ -670,6 +1105,7 @@ export class DshRuntime extends EventEmitter {
     this.stopRequested = true
     this.attached = false
     this.stopProbe()
+    this.stopProxy()
     const inst = readInstance()
     writeInstance(unregisterWindow(inst, this.options.windowPid))
     // ADR-22: degraded snapshot BEFORE the stopped emit — port/pid/managedBy
@@ -717,6 +1153,7 @@ export class DshRuntime extends EventEmitter {
     }
     rlog(`forceRelaunchManaged: explicit relaunch of managed-own dsh pid ${rec.pid}`)
     this.stopProbe()
+    this.stopProxy()
     this.attached = false
     this.stopRequested = false
     this.launchAttempts = 0
@@ -830,6 +1267,7 @@ export class DshRuntime extends EventEmitter {
     }
     rlog(`shutdown: last window closed; stopping managed dsh pid ${rec.pid}`)
     treeKill(rec.pid)
+    this.stopProxy()
     const cleared = readInstance()
     if (cleared.dsh?.pid === rec.pid) {
       cleared.dsh = null
@@ -841,6 +1279,7 @@ export class DshRuntime extends EventEmitter {
 
   dispose(): void {
     this.stopProbe()
+    this.stopProxy()
     this.removeAllListeners()
   }
 }

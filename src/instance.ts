@@ -31,6 +31,21 @@ export interface DshRecord {
    * re-adopt keeps the recorded value (§4.6.4).
    */
   launchMode?: 'start' | 'direct'
+  /**
+   * 0.1.16 #97 (ADR-39/40, §3.5): the dsh PROCESS creation instant (OS report
+   * via Get-Process StartTime, stored ISO-8601 UTC) — the data source for the
+   * details card「启动时间」. SEMANTICALLY SEPARATE from `startedAt` above:
+   * startedAt = the moment this record took over/discovered the dsh (ADR-16
+   * keep semantics); processStartedAt = when the OS created the process.
+   * OPTIONAL for backward compatibility (#22 launchMode precedent, same
+   * shape): records written before 0.1.16 omit the field → readers tolerate
+   * → the card shows 未知; a same-pid re-adopt re-queries once (self-healing,
+   * §3.5-5). Written by runtime.writeRegistry: fresh pid → exactly one
+   * bounded query (5s cap); keep pid with a recorded value → reused with
+   * ZERO queries (the process creation instant is immutable). Query failure →
+   * the field is omitted, the flow never breaks.
+   */
+  processStartedAt?: string
 }
 
 export interface WindowRecord {
@@ -264,6 +279,65 @@ export function queryIdentitySync(
     return 'unknown'
   } catch {
     return 'unknown'
+  }
+}
+
+/**
+ * 0.1.16 #96 (ADR-39/40, §3.5-2): the dsh PROCESS creation instant (OS
+ * report — `Get-Process -Id <pid>` StartTime), single query path shared by
+ * managed and adopted instances (ADR-39: a spawn-time record would be untrue
+ * for the start-family resident-window shape, whose servicePid is created
+ * LATER than the wrapper spawn). G3 shape, verbatim the `queryIdentitySync`
+ * precedent (L223-268): a compile-time script CONSTANT — the pid NEVER enters
+ * this text (zero interpolation, zero double quotes, so the Node argv quote
+ * round-trip cannot corrupt it) — the pid is carried via the
+ * DSH_PROCSTART_PID environment variable; `spawnFn` is the injection seam
+ * (default the real `spawnSync`); never-throw (any failure → null).
+ * Lighter than the CIM identity query: no WMI dependency (E-FX-1 proved real
+ * `Get-Process` availability on the 0.1.15 machine).
+ * Output contract: ISO-8601 UTC with millisecond precision
+ * (`yyyy-MM-ddTHH:mm:ss.fffZ`) — regex-validated Node-side, stored verbatim.
+ */
+export const PROCESS_START_SCRIPT =
+  '$ErrorActionPreference=\'Stop\'; $p = Get-Process -Id $env:DSH_PROCSTART_PID -ErrorAction Stop; ' +
+  '$p.StartTime.ToUniversalTime().ToString(\'yyyy-MM-ddTHH:mm:ss.fffZ\')'
+
+/** Exact output shape of PROCESS_START_SCRIPT (ISO-8601 UTC, ms precision). */
+const PROCESS_START_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/
+
+/** Fresh-branch query budget for the process start time (design §六: bounded,
+ *  once per dsh process lifetime; typical spawn 0.2-0.6s). */
+export const PROCESS_START_QUERY_TIMEOUT_MS = 5_000
+
+/**
+ * One OS query for the process creation instant (G3: script = the
+ * PROCESS_START_SCRIPT constant, pid only via the DSH_PROCSTART_PID env var
+ * — zero quotes, zero interpolation, nothing to corrupt on the argv
+ * round-trip). `pid = null` (external takeover without a resolved pid) →
+ * ZERO spawns and null. Non-win32 → null (defensive). Any failure (timeout /
+ * exited process / access denied on an elevated other-user process / empty
+ * or malformed output) → null — the caller records no field and the card
+ * shows 未知 (never blocks, ADR-40).
+ */
+export function queryProcessStartTimeSync(
+  pid: number | null,
+  timeoutMs: number,
+  spawnFn: typeof spawnSync = spawnSync,
+): string | null {
+  if (pid === null || process.platform !== 'win32') return null
+  try {
+    const out = spawnFn(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-Command', PROCESS_START_SCRIPT],
+      { encoding: 'utf8', windowsHide: true, timeout: timeoutMs, env: { ...process.env, DSH_PROCSTART_PID: String(pid) } },
+    )
+    if (out.status !== 0) return null
+    const text = out.stdout.trim()
+    if (!PROCESS_START_RE.test(text)) return null
+    if (!Number.isFinite(Date.parse(text))) return null
+    return text
+  } catch {
+    return null
   }
 }
 

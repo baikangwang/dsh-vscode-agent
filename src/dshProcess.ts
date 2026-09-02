@@ -131,6 +131,15 @@ export interface SpawnedInfo {
    * the custom-command path (no resolver involvement).
    */
   resolved: { version: string; dir: string; binJs: string; mode: 'steady' | 'refreshed' | 'established' } | null
+  /**
+   * 0.1.14 ADR-30-1: the launch token captured from this launch's banner
+   * (`dsh web: http://127.0.0.1:<port>/?token=<t>`) — the T-path session
+   * source for authProxy (design §3.4 R10). `null` = the banner carried no
+   * `?token=` (the legacy contract shape, ≤0.1.1-rc.2) or the token was
+   * malformed → zero-regression for the old contract (PP-8-1/PP-8-5).
+   * NEVER persisted (D3: registry stores no token — memory-only).
+   */
+  authToken: string | null
 }
 
 // ---------------------------------------------------------------------------
@@ -293,6 +302,61 @@ export function wrapStartPayloadWithMarkers(payload: string, logFile: string): s
   return `${markerPrefix(logFile)} & ${payload}${markerSuffix(logFile)}`
 }
 
+// ---------------------------------------------------------------------------
+// ADR-27 (0.1.13, design §4.11): resident-console static info header — a PURE
+// observation overlay composed INSIDE the marker wrap, BEFORE the production
+// payload. Bare `echo` segments only: NO redirection (the per-launch log data
+// source stays byte-pure for parseSelfVersion/resolvePortFromLog), NO new
+// process, NO new quotes (cmd /c quote pairing shape unchanged), zero marker
+// machine changes (the greedy group 3 of MARKER_WRAP_RE absorbs the compound
+// string; peelLaunchMarkers/conhostInnerCmd semantics untouched).
+// ---------------------------------------------------------------------------
+
+/**
+ * echoSafe (§4.11.2-(4)): neutralize every cmd chain/redirect/escape/expansion
+ * character `[&|<>^"%!]` into `?` — display-level degradation, chain-safe.
+ * Parens are EXEMPT (probe ⑤-a: top-level echo segments keep `()` literal);
+ * `"` is force-neutralized so the command adds ZERO new double quotes.
+ */
+export function echoSafeText(s: string): string {
+  return s.replace(/[&|<>^"%!]/g, '?')
+}
+
+/**
+ * The 9-line static info header (§4.11.2-(3) 定稿, verbatim; Chinese copy per
+ * the user's approved wording). Compile-time constants + the single runtime
+ * variable `logFile` (no tail process, no polling, no env probing — ADR-23
+ * fast signals and the budget tiers are structurally untouched). Static lines
+ * are built to contain none of the echoSafe characters (full-width punctuation
+ * instead); echoSafe is the runtime backstop for the dynamic log path.
+ */
+export function consoleInfoHeader(logFile: string): string {
+  const lines = [
+    '='.repeat(64),
+    'DSH 服务常驻控制台（DSH Panel 托管）',
+    '本窗口是 dsh web 服务的宿主进程，由 DSH Panel 扩展创建。',
+    '关闭本窗口 = 停止 dsh 服务（面板将显示「已停止」）——不需要时可直接关闭。',
+    '本窗口不回显服务实时日志：全部输出已重定向到下方日志文件（取证与排障用）。',
+    `本次启动日志: ${logFile}`,
+    '误关后的恢复：在 DSH Panel 面板点「重启服务」即可重新拉起（新窗口）。',
+    '服务状态请看 VSCode 内的 DSH Panel 面板。',
+    '='.repeat(64),
+  ]
+  return lines.map((l) => `echo ${echoSafeText(l)}`).join(' & ') + ' & echo.'
+}
+
+/**
+ * Compose the info header BEFORE the production payload (§4.11.2-(5)):
+ * `<header> & <payload>`. Consumed at the ONE payload-consumption point in
+ * start() so the header lands inside the marker wrap (marker prefix → header →
+ * payload → marker suffix). Only the conhost-arm-resident launch family
+ * reaches it: startPayload = null (direct path and the custom-command
+ * boundary) never composes the header.
+ */
+export function withConsoleInfoHeader(payload: string, logFile: string): string {
+  return `${consoleInfoHeader(logFile)} & ${payload}`
+}
+
 /**
  * The node-bin production payload (pre-0.1.11 L530-531 shape verbatim, now a
  * named arm): quoted node + quoted binJs + fixed dsh args + quoted log
@@ -354,8 +418,23 @@ export function buildConhostLaunchArgv(payload: string): string[] {
 }
 
 /** Single-port banner regex. Pre-existing (F4): the inner 127.0.0.1 literal is
- *  exempted from the LOOPBACK_HOST de-literalization and left unchanged. */
+ *  exempted from the LOOPBACK_HOST de-literalization and left unchanged.
+ *  0.1.14 ADR-30-1: this regex stays PORT-ONLY and byte-identical (token-blind
+ *  compatibility, PP-8-1/PP-8-5) — token capture lives in TOKEN_RE below. */
 const URL_RE = /dsh web:\s+(http:\/\/127\.0\.0\.1:(\d+))/i
+
+/**
+ * 0.1.14 ADR-30-1: banner `?token=` capture (the token VALUE data source —
+ * the contract tier itself is judged by VERSION, see judgeContractByVersion;
+ * 「判定看版本、取值看 banner」). Charset class `[A-Za-z0-9_-]+` (base64url
+ * family) with NO length anchor (an upstream length change must not shatter
+ * the capture) plus a BOUNDARY check: the token must be followed by
+ * whitespace or end-of-line. `?token=` with nothing after it, or a value
+ * cut short by `&` (a second query param = URL-shape violation for the dsh
+ * banner, which emits exactly one token param), does NOT match → null +
+ * no throw (honest degradation, PP-8-1 malformed cases).
+ */
+const TOKEN_RE = /\?token=([A-Za-z0-9_-]+)(?=\s|$)/
 
 /**
  * Total budget for one managed launch to reach `__DSH_BOOT__` ready (§6.5).
@@ -368,6 +447,106 @@ export const STARTUP_TIMEOUT_MS = 90_000
 export const PROBE_POLL_MS = 500
 /** Single HTTP probe deadline. */
 const HTTP_TIMEOUT_MS = 3_000
+
+// ---------------------------------------------------------------------------
+// 0.1.14 ADR-30 (v1.1 user ruling): VERSION-THRESHOLD contract judgement.
+// The proxy/probe/externalUrl tier is decided by the RUNNING dsh version
+// compared against TOKEN_AUTH_MIN_VERSION — the channel name and the banner
+// shape are BOTH out of the judgement layer (通道名与 banner 特征均不参与判定;
+// banner capture stays the token-VALUE data source only). Semver ordering is
+// prerelease-aware per §3.3: same-patch prerelease identifiers compare
+// numerically then lexically, `rc` > `alpha`, stable > any prerelease — so a
+// future 0.1.2-rc.x / 0.1.2 stable / 0.1.3+ on latest/next AUTO-COVERS the
+// threshold with zero design change (user-ruled future compatibility).
+// ---------------------------------------------------------------------------
+
+/**
+ * The first PUBLISHED npm version carrying the mandatory token auth
+ * (browser-auth). Three-source verdict (EVIDENCE E-VER): git commit 3e24087bfa
+ * (2026-08-25) is first contained by tag dsh-v0.1.2-alpha.1 which was NEVER
+ * published to npm; npm versions line jumps 0.1.1-rc.2 → 0.1.2-alpha.2 with no
+ * unclassified intermediate; alpha.2 behavior evidence (auth sources present).
+ * Single-point constant (去硬编码; PP-8-6 pins it).
+ */
+export const TOKEN_AUTH_MIN_VERSION = '0.1.2-alpha.2'
+
+/** Contract tier of the RUNNING dsh (§3.3 判定表; pure — version only). */
+export type ContractTier = 'token' | 'legacy' | 'unknown'
+
+interface ParsedSemver {
+  major: number
+  minor: number
+  patch: number
+  /** Prerelease identifiers; null = stable release (sorts ABOVE any prerelease). */
+  pre: string[] | null
+}
+
+/** Strict semver parse (`v` prefix tolerated); build metadata ignored; null = malformed. */
+function parseSemver(v: string): ParsedSemver | null {
+  const m = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z.-]+)?$/.exec(v)
+  if (m === null) return null
+  return {
+    major: Number(m[1]),
+    minor: Number(m[2]),
+    patch: Number(m[3]),
+    pre: m[4] !== undefined ? m[4].split('.') : null,
+  }
+}
+
+function comparePreIdentifiers(a: string, b: string): number {
+  const aNum = /^\d+$/.test(a)
+  const bNum = /^\d+$/.test(b)
+  if (aNum && bNum) {
+    const an = Number(a)
+    const bn = Number(b)
+    return an === bn ? 0 : an < bn ? -1 : 1
+  }
+  if (aNum) return -1 // numeric identifiers sort below alphanumeric (semver §11)
+  if (bNum) return 1
+  return a === b ? 0 : a < b ? -1 : 1
+}
+
+/**
+ * Prerelease-aware semver comparison (zero npm deps). Returns -1/0/1, or null
+ * when either input is malformed (caller decides the degradation — the judge
+ * maps null → 'unknown', never throws, PP-8-6①).
+ */
+export function compareDshVersions(a: string, b: string): number | null {
+  const pa = parseSemver(a)
+  const pb = parseSemver(b)
+  if (pa === null || pb === null) return null
+  for (const k of ['major', 'minor', 'patch'] as const) {
+    if (pa[k] !== pb[k]) return pa[k] < pb[k] ? -1 : 1
+  }
+  // Same core: stable > prerelease; both prerelease → identifier-wise compare.
+  if (pa.pre === null && pb.pre === null) return 0
+  if (pa.pre === null) return 1
+  if (pb.pre === null) return -1
+  const len = Math.max(pa.pre.length, pb.pre.length)
+  for (let i = 0; i < len; i++) {
+    const ai = pa.pre[i]
+    const bi = pb.pre[i]
+    if (ai === undefined) return -1 // shorter prerelease set sorts lower
+    if (bi === undefined) return 1
+    const c = comparePreIdentifiers(ai, bi)
+    if (c !== 0) return c
+  }
+  return 0
+}
+
+/**
+ * 0.1.14 ADR-30-2 (v1.1): the contract-tier judgement — pure, version-only
+ * input (the TYPE guarantees no channel name can enter the decision). §3.3
+ * 判定表: ≥ V* → 'token' (#1); < V* → 'legacy' (#2); unreadable/malformed/null
+ * → 'unknown' (#3 — the caller starts direct and relies on the existing 401
+ * diversion + C path; never fabricates a version fact).
+ */
+export function judgeContractByVersion(version: string | null): ContractTier {
+  if (version === null) return 'unknown'
+  const cmp = compareDshVersions(version, TOKEN_AUTH_MIN_VERSION)
+  if (cmp === null) return 'unknown'
+  return cmp >= 0 ? 'token' : 'legacy'
+}
 
 /** Thrown by DshProcess.start() when a launch fails to become ready in time. */
 export class LaunchFailure extends Error {
@@ -384,12 +563,40 @@ export class LaunchFailure extends Error {
  * the dsh port parsed from its `dsh web: http://127.0.0.1:<port>` banner, or
  * null when the banner has not appeared yet. Data source = file, not stdout
  * (detached + stdio redirect makes the old stdout stream unavailable).
+ * 0.1.14: behavior UNCHANGED (token-blind compatibility, PP-8-1/PP-8-5) —
+ * URL_RE stays port-only.
  */
 export function resolvePortFromLog(logFile: string): number | null {
   try {
     const text = fs.readFileSync(logFile, 'utf8')
     const m = text.match(URL_RE)
     return m ? Number(m[2]) : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 0.1.14 ADR-30-1: banner facts (port + token) from the managed-launch log in
+ * ONE read. `token` is null on the legacy banner shape (no `?token=`) and on
+ * malformed tokens (empty / cut by `&` — TOKEN_RE boundary check). Never
+ * throws; the file is read-only (the managed log keeps dsh's own output
+ * verbatim — PP-8-4 asserts the plugin never rewrites it).
+ */
+export interface DshBanner {
+  port: number
+  token: string | null
+}
+
+export function resolveBannerFromLog(logFile: string): DshBanner | null {
+  try {
+    const text = fs.readFileSync(logFile, 'utf8')
+    const pm = text.match(URL_RE)
+    if (pm === null) return null
+    const port = Number(pm[2])
+    if (!Number.isInteger(port) || port <= 0) return null
+    const tm = text.match(TOKEN_RE)
+    return { port, token: tm !== null ? tm[1] : null }
   } catch {
     return null
   }
@@ -445,10 +652,12 @@ export class DshProcess extends EventEmitter {
     // 60s / node-bin 30s), direct stays 90s (ADR-9 untouched).
     const startupBudgetMs = startBudgetMsFor(START_PAYLOAD_VARIANT, mode)
     // 0.1.11 #45 (§4.9.1): the three-stage marker wrap is PERMANENT on the
-    // start-launch path. Applied here — the single payload-consumption point —
-    // so direct mode (never consumes startPayload) and the custom-command
-    // boundary (startPayload = null) stay byte-identical.
-    const markedStartPayload = built.startPayload !== null ? wrapStartPayloadWithMarkers(built.startPayload, logFile) : null
+    // start-launch path. 0.1.13 ADR-27 (§4.11): the static info header is
+    // composed BEFORE the wrap at this same point — the single payload-
+    // consumption point — so the wrap order stays marker prefix → header →
+    // payload → marker suffix, and direct mode (never consumes startPayload)
+    // and the custom-command boundary (startPayload = null) stay byte-identical.
+    const markedStartPayload = built.startPayload !== null ? wrapStartPayloadWithMarkers(withConsoleInfoHeader(built.startPayload, logFile), logFile) : null
     // Redirect both stdout and stderr into the managed log file (P0-B). Open
     // an append fd, hand it to the child, then release it on our side so the
     // detached process owns the file independently. In the start-wait strategy
@@ -627,6 +836,9 @@ export class DshProcess extends EventEmitter {
     } else {
       servicePid = pid
     }
+    // 0.1.14 ADR-30-1: capture the banner token from THIS launch's log (the
+    // T-path session source). Legacy banners yield null (zero regression).
+    const banner = resolveBannerFromLog(logFile)
     return {
       pid,
       port: readyPort,
@@ -634,6 +846,7 @@ export class DshProcess extends EventEmitter {
       logFile,
       servicePid,
       resolved: built.resolved,
+      authToken: banner !== null && banner.port === readyPort ? banner.token : null,
     }
   }
 
@@ -644,6 +857,14 @@ export class DshProcess extends EventEmitter {
    * aborts the poll loop when a resident-console fast-fail already settled
    * the launch; in that case `fastFail` (when provided) resolves the race
    * immediately instead of waiting for the next poll tick.
+   *
+   * 0.1.14 §3.5: banner-AWARE readiness — each tick first resolves the banner
+   * (port + token). A banner WITH a token (the token-auth contract) gates
+   * readiness via the token-303 probe (a bare GET would 401 forever); a
+   * tokenless banner keeps the bare `__DSH_BOOT__` probe BIT-IDENTICALLY
+   * (legacy tier zero-regression, PP-8-5). The fixed-port path also consults
+   * the banner for the token only (its port verdict stays the configured
+   * port, pre-0.1.14 semantics); with no banner/token the shape is unchanged.
    */
   private async waitReadyPort(
     logFile: string,
@@ -654,18 +875,29 @@ export class DshProcess extends EventEmitter {
     const deadline = Date.now() + budgetMs
     const work = async (): Promise<number | null> => {
       if (this.fixedPortPath) {
-        // Fixed-port path: probe the configured port directly (no log parsing).
+        // Fixed-port path: probe the configured port directly; the banner is
+        // consulted ONLY for a token (token-303 form when present).
         while (Date.now() < deadline && !isCancelled()) {
-          if (await probe(this.options.port)) return this.options.port
+          const banner = resolveBannerFromLog(logFile)
+          if (banner !== null && banner.token !== null) {
+            if ((await probeDetail(banner.port, { token: banner.token })).kind === 'ok') return this.options.port
+          } else if (await probe(this.options.port)) {
+            return this.options.port
+          }
           await sleep(PROBE_POLL_MS)
         }
         return null
       }
-      // Random-port path: tail the managed log for the banner, then probe confirm.
+      // Random-port path: tail the managed log for the banner, then probe
+      // confirm (token-303 when the banner carries a token, bare otherwise).
       while (Date.now() < deadline && !isCancelled()) {
-        const port = resolvePortFromLog(logFile)
-        if (port !== null && port > 0 && (await probe(port))) {
-          return port
+        const banner = resolveBannerFromLog(logFile)
+        if (banner !== null && banner.port > 0) {
+          if (banner.token !== null) {
+            if ((await probeDetail(banner.port, { token: banner.token })).kind === 'ok') return banner.port
+          } else if (await probe(banner.port)) {
+            return banner.port
+          }
         }
         await sleep(PROBE_POLL_MS)
       }
@@ -778,15 +1010,64 @@ export class DshProcess extends EventEmitter {
   }
 }
 
-/** Single `__DSH_BOOT__` probe on a port (the one adoption/readiness gate). */
+/**
+ * Single `__DSH_BOOT__` probe on a port (the one adoption/readiness gate).
+ * 0.1.14: behavior is BIT-IDENTICAL to the pre-0.1.14 bare-GET form (legacy
+ * contract readiness, PP-8-5 zero-regression) — implemented as the bare form
+ * of probeDetail.
+ */
 export async function probe(port: number): Promise<boolean> {
+  return (await probeDetail(port)).kind === 'ok'
+}
+
+/**
+ * 0.1.14 §3.5: tri-state probe outcome — `ok` = the service answers and (for
+ * index shapes) the boot signature is present; `unauthorized` = the service is
+ * ALIVE but demands a session (the token-auth contract's 401 — a DIRECT
+ * runtime fact that drives the 401 diversion, never a crash signal);
+ * `down` = unreachable / other failure.
+ *
+ * Forms (§3.5 档位选择 = 版本判定结果):
+ *  - no opts      : bare `GET /` expecting 200 + `__DSH_BOOT__` (legacy tier;
+ *                   a 401 answer still classifies as 'unauthorized' so the
+ *                   unknown-tier 401 diversion can observe it, 判定表 #3 行).
+ *  - opts.token   : token-303 liveness — `GET /?token=<t>` with
+ *                   `redirect: 'manual'`, expecting 303 WITHOUT following the
+ *                   redirect (no cookie jar needed; 303 = alive + token valid).
+ *  - opts.cookie  : C-path session probe — `GET /` + Cookie header expecting
+ *                   200 + `__DSH_BOOT__` (the self-minted session).
+ */
+export type ProbeKind = 'ok' | 'unauthorized' | 'down'
+export interface ProbeOutcome {
+  kind: ProbeKind
+}
+
+export async function probeDetail(
+  port: number,
+  opts?: { token?: string | null; cookie?: string | null },
+): Promise<ProbeOutcome> {
   try {
-    const res = await fetch(`http://${LOOPBACK_HOST}:${port}/`, { signal: AbortSignal.timeout(HTTP_TIMEOUT_MS) })
-    if (!res.ok) return false
+    const url = `http://${LOOPBACK_HOST}:${port}/${opts?.token != null && opts.token.length > 0 ? `?token=${opts.token}` : ''}`
+    const headers: Record<string, string> = {}
+    if (opts?.cookie != null && opts.cookie.length > 0) headers.cookie = opts.cookie
+    const res = await fetch(url, {
+      ...(Object.keys(headers).length > 0 ? { headers } : {}),
+      redirect: 'manual',
+      signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
+    })
+    if (opts?.token != null && opts.token.length > 0) {
+      // token-303 form: 303 = alive + token accepted; 401 = alive + session
+      // rejected (→ diversion); anything else = down. The redirect is NOT
+      // followed (redirect:'manual'), PP-8-3①.
+      if (res.status === 303) return { kind: 'ok' }
+      if (res.status === 401) return { kind: 'unauthorized' }
+      return { kind: 'down' }
+    }
+    if (!res.ok) return { kind: res.status === 401 ? 'unauthorized' : 'down' }
     const text = await res.text()
-    return text.includes('__DSH_BOOT__')
+    return { kind: text.includes('__DSH_BOOT__') ? 'ok' : 'down' }
   } catch {
-    return false
+    return { kind: 'down' }
   }
 }
 

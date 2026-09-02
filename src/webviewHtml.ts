@@ -14,12 +14,47 @@
 // or in the page script; the CSP `frame-src http://127.0.0.1:*` (panel only —
 // the details card embeds NOTHING, hence no frame-src) is a hard-coded
 // security constraint and stays unchanged.
+//
+// 0.1.15 #90 (问题 8/9 三层修复, ADR-35): ① both CSP templates interpolate
+// `cspSource` (the caller passes the runtime `webview.cspSource` property —
+// never a guessed scheme) into `script-src`; ② the panel script is BIND-FIRST:
+// every binding attaches BEFORE the `typeof acquireVsCodeApi` check (the
+// 0.1.14 dead zone — bindings sat behind the early return and never ran), and
+// handlers degrade VISIBLELY when the bridge is down; ③ the dead-bridge
+// diagnostics are made visible (classList.remove('hide') + #state 双写) —
+// no longer written into the initially-hidden overlay; ④ the details card
+// gains a visible survival diagnostic (vscode=null → 「消息桥不可用」 card-top
+// note) while its null-safe/event-delegation structure stays untouched.
+// #83: the awaitingChannel channel-pick card (DOM always baked, shown/hidden
+// by state); the button disable matrix (#91) is baked per state.
 import type { DshLaunchInfo } from './launchInfo'
-export function buildPanelHtml(url: string | null): string {
+import { formatLocalTimestamp } from './launchInfo'
+import type { RuntimeState } from './runtime'
+import { buttonDisableRules } from './panelMessages'
+import { channelPickItems } from './channelSelect'
+
+/** Every RuntimeState, for the baked per-state disable matrix (single source). */
+const PANEL_STATES: readonly RuntimeState[] = ['idle', 'awaitingChannel', 'starting', 'ready', 'error', 'stopped']
+
+export function buildPanelHtml(url: string | null, cspSource = '', state: RuntimeState = 'starting'): string {
   const known = url !== null && url !== ''
   const frameAttr = known ? ` style="display:block" src="${escapeAttr(url!)}"` : ''
-  const overlayCls = known ? ' class="hide"' : ''
+  const awaiting = state === 'awaitingChannel'
+  // #90③: the overlay starts hidden ONLY when a frame is baked or the pick
+  // card owns the first frame (awaitingChannel) — the dead-bridge diagnostics
+  // must be able to surface (the 0.1.14 bug wrote them into a hidden layer).
+  const overlayCls = known || awaiting ? ' class="hide"' : ''
   const stateText = known ? `dsh · ${escapeAttr(url!)}` : 'initializing…'
+  // #91 script-side UX layer: the full per-state disable matrix is baked so the
+  // page applies `disabled` without any round-trip; the extension side re-checks.
+  const disabledMatrix = JSON.stringify(Object.fromEntries(PANEL_STATES.map((s) => [s, buttonDisableRules(s)])))
+  const dis = buttonDisableRules(state)
+  const btnAttr = (d: boolean): string => (d ? ' disabled' : '')
+  // #90①: `script-src` gains the runtime cspSource (caller passes
+  // webview.cspSource; never a guessed scheme). Empty source = the pre-0.1.15
+  // shape (compat with existing bakes / headless calls).
+  const scriptSrc =
+    cspSource !== null && cspSource.trim().length > 0 ? `'unsafe-inline' ${escapeAttr(cspSource.trim())}` : `'unsafe-inline'`
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -27,7 +62,7 @@ export function buildPanelHtml(url: string | null): string {
 <meta http-equiv="Content-Security-Policy" content="
   default-src 'none';
   style-src 'unsafe-inline';
-  script-src 'unsafe-inline';
+  script-src ${scriptSrc};
   frame-src http://127.0.0.1:*;
 ">
 <style>
@@ -40,77 +75,168 @@ export function buildPanelHtml(url: string | null): string {
   button { background: transparent; border: none; color: var(--vscode-icon-foreground);
     cursor: pointer; font-size: 12px; padding: 2px 6px; border-radius: 3px; }
   button:hover { background: var(--vscode-toolbar-hoverBackground); }
+  button:disabled { opacity: .4; cursor: default; }
+  button:disabled:hover { background: transparent; }
   #stage { flex: 1; position: relative; min-height: 0; }
   iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; display: none; }
   #overlay { position: absolute; inset: 0; display: flex; flex-direction: column;
     align-items: center; justify-content: center; gap: 8px; text-align: center; padding: 16px;
     box-sizing: border-box; white-space: pre-wrap; }
+  #channel-pick { position: absolute; inset: 0; display: flex; flex-direction: column;
+    gap: 6px; padding: 14px 16px; box-sizing: border-box; overflow: auto; }
+  .pick-head { font-size: 13px; font-weight: 600; margin: 2px 0 4px; }
+  .pick-card { display: flex; flex-direction: column; align-items: flex-start; text-align: left;
+    border: 1px solid var(--vscode-panel-border); border-radius: 4px; padding: 8px 10px; gap: 2px; }
+  .pick-card .pick-label { font-weight: 600; font-size: 13px; }
+  .pick-card .pick-detail { opacity: .75; font-size: 11px; white-space: normal; }
+  #pick-later { align-self: center; margin-top: 4px; opacity: .8; }
   .hide { display: none !important; }
 </style>
 </head>
 <body>
   <div id="chrome">
     <span id="state">${stateText}</span>
-    <button id="btn-details" title="DSH 详情">ⓘ</button>
-    <button id="btn-open" title="Open in browser">↗</button>
-    <button id="btn-restart" title="Restart runtime">⟳</button>
-    <button id="btn-stop" title="Stop runtime">■</button>
+    <button id="btn-details" title="DSH 配置"${btnAttr(dis.details)}>ⓘ</button>
+    <button id="btn-open" title="Open in browser"${btnAttr(dis.openBrowser)}>↗</button>
+    <button id="btn-restart" title="Restart runtime"${btnAttr(dis.restart)}>⟳</button>
+    <button id="btn-stop" title="Stop runtime"${btnAttr(dis.stop)}>■</button>
   </div>
   <div id="stage">
     <div id="overlay"${overlayCls}>initializing…</div>
+    <div id="channel-pick"${awaiting ? '' : ' class="hide"'}>${channelPickCardHtml()}</div>
     <iframe id="frame" sandbox="allow-scripts allow-forms allow-same-origin allow-downloads"${frameAttr}></iframe>
   </div>
 <script>
 (function () {
+  // #91 script-side UX layer: the baked per-state disable matrix (extension
+  // side re-computes the same rules per message — correctness layer).
+  var DISABLE = ${disabledMatrix};
   var stateEl = document.getElementById('state');
   var overlayEl = document.getElementById('overlay');
   var frameEl = document.getElementById('frame');
+  var pickEl = document.getElementById('channel-pick');
+  var btnD = document.getElementById('btn-details');
+  var btnO = document.getElementById('btn-open');
+  var btnR = document.getElementById('btn-restart');
+  var btnS = document.getElementById('btn-stop');
   // Boot observation (v4, item 3): prove the page script actually executed.
+  // RV-16-11 取证口径：title「·booted」区分两候选死因（a: title 正常 + 握手缺失
+  // = CSP 拦 shim / b: title 异常 = 脚本未执行）——语义保留。
   try {
     document.title += ' ·booted';
     console.log('[dsh-panel] page booted at', location.href);
     if (stateEl) stateEl.textContent = 'page booted…';
   } catch (e) { /* observation must never block the page */ }
-  if (typeof acquireVsCodeApi !== 'function') {
-    // Diagnostics: VSCode's injected API script was blocked (CSP) — without it
-    // no state message can ever arrive and the overlay stays at 'initializing…'.
-    if (stateEl) stateEl.textContent = 'webview API unavailable';
-    if (overlayEl) overlayEl.textContent = 'Webview API 不可用（acquireVsCodeApi 未定义）。\n\n请反馈此信息给开发方；并检查 VSCode 扩展宿主日志中本 webview 的 CSP 报错。';
-    return;
+  // 0.1.15 #90② bind-first: \`vscode\` is DECLARED here and assigned by the API
+  // check BELOW — every binding attaches unconditionally, so the 0.1.14 dead
+  // zone (bindings behind \`typeof acquireVsCodeApi\` + early return, never ran)
+  // is structurally gone; a dead bridge degrades VISIBLELY on click.
+  var vscode = null;
+  var handshakeSent = false;
+  function bridgeDown() {
+    // #90③ 死亡诊断必须可见：#state 双写 + remove('hide')（不再写进隐藏层）。
+    try {
+      if (stateEl) stateEl.textContent = 'webview API unavailable';
+      if (overlayEl) {
+        overlayEl.textContent = 'Webview API 不可用（acquireVsCodeApi 未定义）。\\n\\n请反馈此信息给开发方；并检查 VSCode 扩展宿主日志中本 webview 的 CSP 报错。';
+        overlayEl.classList.remove('hide');
+      }
+    } catch (e) { /* diagnostics must never break the panel */ }
   }
-  const vscode = acquireVsCodeApi();
+  function post(m) {
+    if (!vscode) { bridgeDown(); return; }
+    try { vscode.postMessage(m); } catch (e) { /* never break the panel */ }
+  }
+  // 握手 post（定义位于 API 检查之前——bind-first；实际发送在检查之后）。
+  function sendHandshake() {
+    if (handshakeSent) return;
+    handshakeSent = true;
+    post({ type: 'webviewReady' });
+  }
   function setUrl(url) {
     if (frameEl.src === url) return;
     frameEl.src = url;
     frameEl.style.display = 'block';
     overlayEl.classList.add('hide');
   }
+  function applyDisabled(st) {
+    var m = DISABLE[st];
+    if (!m) return;
+    if (btnD) btnD.disabled = !!m.details;
+    if (btnO) btnO.disabled = !!m.openBrowser;
+    if (btnR) btnR.disabled = !!m.restart;
+    if (btnS) btnS.disabled = !!m.stop;
+  }
+  function applyState(msg) {
+    var st = msg.state;
+    applyDisabled(st);
+    if (pickEl) {
+      if (st === 'awaitingChannel') {
+        if (overlayEl) overlayEl.classList.add('hide');
+        pickEl.classList.remove('hide');
+      } else {
+        pickEl.classList.add('hide');
+      }
+    }
+    if (stateEl) stateEl.textContent = st === 'ready' ? ('dsh · ' + (msg.url || '')) : (st === 'awaitingChannel' ? '请选择 dsh 通道' : st);
+    if (st === 'ready' && msg.url) setUrl(msg.url);
+    else if (st === 'error') {
+      overlayEl.textContent = '启动失败：' + (msg.error || 'unknown') + '\\n\\n（可用工具栏 ⟳ 重试）';
+      overlayEl.classList.remove('hide');
+    } else if (st !== 'ready' && st !== 'awaitingChannel') {
+      overlayEl.textContent = st === 'starting' ? '正在启动 dsh…' : st;
+      overlayEl.classList.remove('hide');
+    }
+  }
+  // ---- bind-first：全部绑定先于 typeof acquireVsCodeApi 检查（#90②）----
+  if (btnD) btnD.addEventListener('click', function () { post({ type: 'showDetails' }); });
+  if (btnO) btnO.addEventListener('click', function () { post({ type: 'openBrowser' }); });
+  if (btnR) btnR.addEventListener('click', function () { post({ type: 'restart' }); });
+  if (btnS) btnS.addEventListener('click', function () { post({ type: 'stop' }); });
+  if (pickEl) pickEl.addEventListener('click', function (e) {
+    var t = e.target;
+    var card = t && t.closest ? t.closest('[data-channel]') : null;
+    if (card) { post({ type: 'chooseChannel', channel: card.getAttribute('data-channel') || '' }); return; }
+    if (t && t.id === 'pick-later') post({ type: 'chooseChannel', channel: null });
+  });
   window.addEventListener('message', function (e) {
-    const msg = e.data;
+    var msg = e.data;
     if (!msg || typeof msg !== 'object') return;
     if (msg.type === 'setUrl' && msg.url) setUrl(msg.url);
     if (msg.type === 'state') {
-      stateEl.textContent = msg.state === 'ready' ? ('dsh · ' + (msg.url || '')) : msg.state;
-      if (msg.state === 'ready' && msg.url) setUrl(msg.url);
-      else if (msg.state === 'error') {
-        overlayEl.textContent = '启动失败：' + (msg.error || 'unknown') + '\n\n（可用工具栏 ⟳ 重试）';
-        overlayEl.classList.remove('hide');
-      } else if (msg.state !== 'ready') {
-        overlayEl.textContent = msg.state === 'starting' ? '正在启动 dsh…' : msg.state;
-        overlayEl.classList.remove('hide');
-      }
-      vscode.postMessage({ type: 'stateAck', appliedState: msg.state });
+      applyState(msg);
+      post({ type: 'stateAck', appliedState: msg.state });
     }
   });
-  document.getElementById('btn-details').addEventListener('click', () => vscode.postMessage({ type: 'showDetails' }));
-  document.getElementById('btn-open').addEventListener('click', () => vscode.postMessage({ type: 'openBrowser' }));
-  document.getElementById('btn-restart').addEventListener('click', () => vscode.postMessage({ type: 'restart' }));
-  document.getElementById('btn-stop').addEventListener('click', () => vscode.postMessage({ type: 'stop' }));
-  vscode.postMessage({ type: 'webviewReady' });
+  // ---- API 检查在绑定之后：无提前 return 死区；失败诊断立即可见（#90②③）----
+  if (typeof acquireVsCodeApi === 'function') {
+    try { vscode = acquireVsCodeApi(); } catch (e) { vscode = null; }
+  }
+  if (vscode) sendHandshake();
+  else bridgeDown();
 })();
 </script>
 </body>
 </html>`
+}
+
+/**
+ * #83: the awaitingChannel pick card (design §5.3) — three channel cards with
+ * the verbatim 0.1.14 §2.3-② copy (single-sourced from channelSelect
+ * channelPickItems; no version literals) + the 稍后再说 secondary action.
+ * Always baked into the DOM (hidden unless awaitingChannel) so the state
+ * message can reveal it regardless of the bake-time state.
+ */
+function channelPickCardHtml(): string {
+  const cards = channelPickItems()
+    .map(
+      (it) => `<button class="pick-card" data-channel="${escapeAttr(it.label)}"><span class="pick-label">${escapeAttr(it.label)}</span><span class="pick-detail">${escapeAttr(it.detail ?? '')}</span></button>`,
+    )
+    .join('\n    ')
+  return `
+    <div class="pick-head">选择要启动的 dsh 通道</div>
+    ${cards}
+    <button id="pick-later">稍后再说（沿用当前通道启动，下次再问）</button>`
 }
 
 // ---------------------------------------------------------------------------
@@ -126,6 +252,19 @@ export interface DetailsRenderOptions {
   /** True while a launch is in flight with a snapshot present — the
    *  启动方式 row shows 「启动中（以就绪后为准）」 (§4.7.8). */
   launching?: boolean
+  /**
+   * 0.1.15 #90①: the runtime `webview.cspSource` (caller passes it; never a
+   * guessed scheme) interpolated into the card CSP `script-src`. Empty/absent
+   * = the pre-0.1.15 shape (compat with existing headless calls).
+   */
+  cspSource?: string
+  /**
+   * 0.1.15 #84: the normalized config channel (`dsh.channel`). When it differs
+   * from the running snapshot channel, the switcher renders the highlighted
+   * 「立即重启以生效」 button (reuses the existing restart action; never
+   * auto-restarts). Absent = no pending-restart surface.
+   */
+  configChannel?: string | null
 }
 
 /** Escape a runtime value for safe embedding into HTML attribute/content. */
@@ -173,6 +312,11 @@ export function buildDetailsHtml(
   } else {
     body = info === null ? readyBody(null) : readyBody(info, opts)
   }
+  // #90①: card CSP script-src gains the runtime cspSource (same rule as the panel).
+  const cardScriptSrc =
+    opts?.cspSource != null && opts.cspSource.trim().length > 0
+      ? `'unsafe-inline' ${escapeAttr(opts.cspSource.trim())}`
+      : `'unsafe-inline'`
   return `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -180,13 +324,16 @@ export function buildDetailsHtml(
 <meta http-equiv="Content-Security-Policy" content="
   default-src 'none';
   style-src 'unsafe-inline';
-  script-src 'unsafe-inline';
+  script-src ${cardScriptSrc};
 ">
 <style>
   html, body { margin: 0; padding: 0; background: var(--vscode-sideBar-background);
     color: var(--vscode-foreground); font-family: var(--vscode-font-family); font-size: 12px; }
   #card { padding: 10px 12px 16px; }
   .head { font-size: 14px; font-weight: 600; margin-bottom: 8px; }
+  .bridge-dead { font-size: 11px; color: var(--vscode-editorWarning-foreground, #cca700);
+    border: 1px solid var(--vscode-editorWarning-foreground, #cca700); border-radius: 4px;
+    padding: 4px 8px; margin: 0 0 8px; }
   .sect { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; opacity: .7;
     margin: 12px 0 4px; border-bottom: 1px solid var(--vscode-panel-border); padding-bottom: 2px; }
   .ver { font-size: 20px; font-weight: 700; margin: 2px 0; }
@@ -211,6 +358,10 @@ export function buildDetailsHtml(
     border: none; color: var(--vscode-button-secondaryForeground, inherit);
     cursor: pointer; font-size: 11px; padding: 3px 8px; border-radius: 3px; }
   button:hover { background: var(--vscode-toolbar-hoverBackground); }
+  button:disabled { opacity: .45; cursor: default; }
+  button:disabled:hover { background: var(--vscode-button-secondaryBackground, rgba(128,128,128,.2)); }
+  button.primary { background: var(--vscode-button-background, #0e639c);
+    color: var(--vscode-button-foreground, #ffffff); font-weight: 600; }
 </style>
 </head>
 <body>
@@ -220,6 +371,20 @@ export function buildDetailsHtml(
 (function () {
   var vscode = (typeof acquireVsCodeApi === 'function') ? acquireVsCodeApi() : null;
   function post(m) { if (vscode) { try { vscode.postMessage(m); } catch (e) { /* never break the card */ } } }
+  // 0.1.15 #90④ 存活诊断（问题 9 静默吞掉治本）：vscode=null → 卡顶小字
+  // 「消息桥不可用」——防御设计保留（null-safe + never break the card），
+  // 但失败必须留下可见痕迹；null-safe/事件委托结构零改动。
+  if (!vscode) {
+    try {
+      var card = document.getElementById('card');
+      if (card) {
+        var note = document.createElement('div');
+        note.className = 'bridge-dead';
+        note.textContent = '消息桥不可用（webview API 不可用——卡片按钮将无响应；请反馈此信息给开发方）';
+        card.insertBefore(note, card.firstChild);
+      }
+    } catch (e) { /* diagnostics must never break the card */ }
+  }
   document.getElementById('card').addEventListener('click', function (e) {
     var t = e.target;
     var el = t && t.closest ? t.closest('[data-action]') : null;
@@ -231,6 +396,7 @@ export function buildDetailsHtml(
     else if (a === 'update') post({ type: 'updateRuntime' });
     else if (a === 'restart') post({ type: 'restart' });
     else if (a === 'open-panel') post({ type: 'openPanel' });
+    else if (a === 'set-channel') post({ type: 'setChannel', channel: el.getAttribute('data-channel') || '' });
   });
 })();
 </script>
@@ -242,7 +408,7 @@ export function buildDetailsHtml(
 function readyBody(info: DshLaunchInfo | null, opts?: DetailsRenderOptions): string {
   if (info === null) {
     return `
-  <div class="head">dsh 详情</div>
+  <div class="head">dsh 配置</div>
   <div class="muted">版本未知（本次会话未解析）</div>
   <div class="muted">尚无启动信息；dsh 就绪后此处显示版本与 bin 目录。</div>`
   }
@@ -251,13 +417,13 @@ function readyBody(info: DshLaunchInfo | null, opts?: DetailsRenderOptions): str
     // NO big version, NO bin copy/open actions (§4.7.4 / PU-3).
     const cmd = info.externalCommandLine
     return `
-  <div class="head">dsh 详情</div>
+  <div class="head">dsh 配置</div>
   <div class="amber">外部接管的 dsh——由外部命令自行启动，扩展未解析其 bin 目录与版本。</div>
   ${kvRow('端口', info.port !== null ? String(info.port) : '—')}
   ${kvRow('pid', info.pid !== null ? String(info.pid) : '—')}
   ${kvRow('managedBy', managedByText(info.managedBy))}
-  ${kvRow('启动时间', info.startedAt ?? '未知')}
-  ${kvRow('通道', info.channel)}
+  ${kvRow('启动时间', formatLocalTimestamp(info.processStartedAt) ?? '未知')}
+  ${channelSwitcherHtml(info.channel, opts)}
   ${kvRow('启动方式', '外部启动/未知')}
   ${kvRow('最近检查', info.lastCheckAt ?? '未知')}
   ${cmd !== null ? `<div class="sect">接管命令行</div>\n  <div class="mono small">${escapeAttr(cmd)}</div>` : ''}
@@ -300,15 +466,15 @@ function readyBody(info: DshLaunchInfo | null, opts?: DetailsRenderOptions): str
       : `<div class="sect">bin 目录</div>
   <div class="muted">本次会话未解析 bin 目录（复用既有 dsh）；重启 dsh 后此处显示。</div>`
   return `
-  <div class="head">dsh 详情</div>
+  <div class="head">dsh 配置</div>
   <div class="sect">版本</div>
   ${verBlock}
-  ${kvRow('通道', info.channel)}
+  ${channelSwitcherHtml(info.channel, opts)}
   ${kvRow('启动方式', launchModeText(info, opts))}
   ${binBlock}
   <div class="sect">运行</div>
   ${kvRow('进程', `端口 ${info.port !== null ? String(info.port) : '—'} · pid ${info.pid !== null ? String(info.pid) : '—'} · ${managedByText(info.managedBy)}`)}
-  ${kvRow('启动时间', info.startedAt ?? '未知')}
+  ${kvRow('启动时间', formatLocalTimestamp(info.processStartedAt) ?? '未知')}
   ${kvRow('resolver', `${info.resolverMode ?? '未知'} · 最近检查 ${info.lastCheckAt ?? '未知'}`)}
   ${logFilesHtml(info)}
   <div class="sect">操作</div>
@@ -326,6 +492,37 @@ function stoppedRows(info: DshLaunchInfo): string {
   ${kvRow('pid', info.pid !== null ? String(info.pid) : '—')}
   ${kvRow('managedBy', managedByText(info.managedBy))}
   ${kvRow('启动方式', launchModeText(info, undefined))}`
+}
+
+/**
+ * #84: the always-present channel switcher for the ready card (design §5.3).
+ * Current channel highlighted (its own button disabled — no redundant write);
+ * the three buttons carry `data-action="set-channel"` (setChannel uplink).
+ * When the config channel differs from the RUNNING snapshot channel, the
+ * highlighted 「立即重启以生效」 button renders (reuses the existing restart
+ * action; never auto-restarts; channelSelected=true is written by the host,
+ * so the first-launch pick card never fires again).
+ */
+function channelSwitcherHtml(current: string, opts?: DetailsRenderOptions): string {
+  const cfg = typeof opts?.configChannel === 'string' && opts.configChannel.length > 0 ? opts.configChannel : null
+  const pending = cfg !== null && cfg !== current
+  const buttons = channelPickItems()
+    .map(
+      (it) =>
+        `<button data-action="set-channel" data-channel="${escapeAttr(it.label)}"${it.label === current ? ' disabled' : ''}>${escapeAttr(it.label)}</button>`,
+    )
+    .join('\n    ')
+  const pendingNote = pending ? ` <span class="muted">（已选「${escapeAttr(cfg!)}」，待重启生效）</span>` : ''
+  const pendingAction = pending
+    ? `
+  <div class="actions"><button class="primary" data-action="restart">立即重启以生效</button></div>`
+    : ''
+  return `
+  <div class="sect">通道</div>
+  <div class="row"><span class="k">当前</span><span class="v"><b>${escapeAttr(current)}</b>${pendingNote}</span></div>
+  <div class="actions">
+    ${buttons}
+  </div>${pendingAction}`
 }
 
 /** Log inventory rows: copy + reveal-in-OS actions (§4.7.3c H3). */

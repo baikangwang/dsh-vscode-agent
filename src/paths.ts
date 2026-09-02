@@ -138,15 +138,31 @@ export function runtimeMetaFile(channel: string): string {
 }
 
 /**
+ * Secret redaction for the plugin-authored log surfaces (0.1.14 ADR-30, design
+ * §3.6 / NOTE-5): every `token=<value>` occurrence in a rlog/panelLog/openInBrowser
+ * payload line is rewritten to the literal `token=<REDACTED>` BEFORE the line is
+ * written. Idempotent (`<` is outside the captured charset, so an already
+ * redacted value is left untouched). The managed dsh log (`logs/dsh-<ts>.log`,
+ * dsh's own stdout) does NOT flow through here and keeps the banner verbatim —
+ * it is the upstream e2e-equivalent evidence source and is never rewritten
+ * (PP-8-4 asserts both sides).
+ */
+export function redactSecrets(msg: string): string {
+  return msg.replace(/token=[A-Za-z0-9_-]+/gi, 'token=<REDACTED>')
+}
+
+/**
  * Append a decision-trace line to logs/runtime.log. Shared by the runtime
  * orchestration, the managed-launcher fallback decisions and the dshResolver
  * (full decision trajectory, design §4.1.2/§10). Diagnostics only; never throws.
+ * 0.1.14: the line is secret-redacted at this single write point (ADR-30 §3.6 —
+ * the rlog surface never carries a token literal).
  */
 export function appendDecisionLog(msg: string): void {
   try {
     const file = runtimeLogFile()
     fs.mkdirSync(path.dirname(file), { recursive: true })
-    fs.appendFileSync(file, `[${new Date().toISOString()}] [win ${process.pid}] ${msg}\n`, 'utf8')
+    fs.appendFileSync(file, `[${new Date().toISOString()}] [win ${process.pid}] ${redactSecrets(msg)}\n`, 'utf8')
   } catch {
     /* diagnostics must never break the runtime */
   }

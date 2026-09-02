@@ -5,24 +5,40 @@ DeepSeek Harness 的 VSCode 右侧边栏面板：自动启动/复用 `dsh web`�
 
 ## 特性
 
-- 右侧边栏（auxiliary bar）独立视图，启动后自动展开；
+- 右侧边栏（auxiliary bar）双容器页签——「DSH 会话」/「DSH 配置」两个独立视图，启动后自动展开；
 - **应用级生命周期**：第一窗口启动 dsh、后续窗口复用；关闭非最后一个窗口不停，
   关闭最后一个窗口/VSCode 退出时同步关停（含外部实例接管，带防误杀校验）；
 - 运行时由 npm/npx 托管：每次启动自动检查 `latest`，离线回退 npx 缓存；
 - 已运行的 dsh（浏览器/npx 启动于 `127.0.0.1:<port>`）直接复用，不重复启动；
 - **常驻服务控制台**（默认开启）：dsh 运行于自持的经典控制台窗（标题
   `dsh service console (DSH Panel)`），其全部子进程共享该控制台，结构性消除
-  每次工具调用的闪窗；**关闭该窗口 = 用户停止 dsh**（不会自动重拉，面板点 ⟳
+  每次工具调用的闪窗；窗内启动即显示静态信息头（窗口身份、关闭后果、本次启动
+  日志路径、误关恢复指引；服务实时日志不回显窗内——全部输出重定向至 per-launch
+  log 供取证与排障）；**关闭该窗口 = 用户停止 dsh**（不会自动重拉，面板点 ⟳
   重连即可按需重启）。极端情况下（探活瞬时误判）可能出现「面板显示已停止而
   常驻窗仍在」——此时点重连即可重新接管，不会误杀存活的 dsh；
 - **dsh 版本与详情可见**：状态栏 `● DSH <端口> · v<版本>`（点击打开详情视图），
   面板工具栏 ⓘ 同样可达；详情卡含版本双源核对、bin 目录（复制/打开）、
-  启动方式、端口/pid、resolver 状态与日志文件快捷操作。
+  启动方式、端口/pid、启动时间（dsh 进程真实启动时刻，OS 报告，本地
+  `yyyy-MM-dd HH:mm:ss` 格式）、resolver 状态与日志文件快捷操作。
+- **dsh 通道选择**：三个发布通道 `latest`/`next`（rc 稳定系）/`alpha`（最新
+  实验系）。首次启动先弹通道选择（选完才启动 dsh；Esc = 沿用当前值、下次
+  再问）；之后随时可从命令面板 `DSH: 选择 dsh 通道` 更改（改选经重启 dsh
+  生效，不自动重启）。旧配置值 `preview` 非有效 dist-tag，运行时按 `latest`
+  处理（不写回用户配置）。
+- **token 适配（dsh ≥ 0.1.2-alpha.2 自动启用）**：dsh 0.1.2-alpha.2 起网页
+  访问需要登录契约（启动 banner 带访问 token）。插件按**运行中具体 dsh
+  版本**（阈值 `0.1.2-alpha.2`）自动判定：token 契约下面板经插件内嵌的本地
+  回环代理（authProxy，仅绑 127.0.0.1 随机端口）接入——登录态自动建立，无需
+  复制 token；「在浏览器打开」外发带 token 的直达链接。会话 cookie 只在代理
+  内存中持有（**不落盘**、不写入注册表，响应 Set-Cookie 一律剥离），插件
+  日志中 token 一律脱敏为 `token=<REDACTED>`。latest/next（现值 0.1.1-rc.2）
+  保持直连行为逐位不变。
 
 ## 安装（离线 VSIX）
 
 ```powershell
-code --install-extension dsh-vscode-agent-0.1.12.vsix
+code --install-extension dsh-vscode-agent-0.1.16.vsix
 # 或 VSCode 扩展面板 → 「…」→ 从 VSIX 安装…
 ```
 
@@ -36,7 +52,8 @@ code --install-extension dsh-vscode-agent-0.1.12.vsix
 | 配置 | 默认 | 说明 |
 |---|---|---|
 | `dsh.port` | `3080` | dsh 监听端口（0=随机；被非 DSH 占用自动回落随机）。固定端口可被浏览器 dsh 复用；扩展先启动会占用它，浏览器中请用 `dsh web --port 0` |
-| `dsh.channel` | `latest` | 版本通道（`latest`/`preview`） |
+| `dsh.channel` | `latest` | 版本通道（`latest` = 正式版 / `next` = rc 稳定系 / `alpha` = 最新实验系；旧值 `preview` 运行时按 `latest` 处理，不写回） |
+| `dsh.channelSelected` | `false` | 首启通道选择已完成标志（首次启动弹通道选择后写入；命令面板重选通道不改此值） |
 | `dsh.command` | 空 | 自定义启动命令，如 `dsh web --port 3080` |
 | `dsh.autoStart` | `true` | VSCode 启动时自动启动/复用 dsh |
 | `dsh.autoOpenPanel` | `true` | 启动后自动展开右侧边栏面板 |
@@ -48,6 +65,7 @@ code --install-extension dsh-vscode-agent-0.1.12.vsix
 
 - `DSH: Open Panel` / `DSH: Show Details`（dsh 版本/bin 目录/启动方式详情视图）/ `DSH: Restart Runtime`（reconnect，不关停 dsh）/ `DSH: Stop Runtime`（disconnect，不关停 dsh）
 - `DSH: Open in Browser` / `DSH: Update Runtime`（受控重拉 managed dsh；外部 dsh 提示手动 `npx @deepseek-ai/dsh@latest web`）
+- `DSH: 选择 dsh 通道`（重选 `latest`/`next`/`alpha`；经重启 dsh 生效，不自动重启）
 
 ## 数据与日志
 

@@ -57,7 +57,12 @@ export interface LaunchLogFileEntry {
 export interface DshLaunchInfo {
   /** dsh self-reported version (managed-launch log first line; best-effort → null). */
   dshVersion: string | null
-  /** resolver version (bin-dir package.json; session unresolved → null). */
+  /**
+   * resolver version (bin-dir package.json). 0.1.14 E-VR-6 语义修订：本字段
+   * 升级为**契约档位判定主源**（judgeContractByVersion 的判定输入 =
+   * SpawnedInfo.resolved.version —— 与运行中进程双端同源的单真源）；其
+   * 「next-launch 辅助源」旧语义由本轮实施同步废弃（判定看版本）。
+   */
   resolverVersion: string | null
   /** Five-tier cross-check conclusion derived from the two sources. */
   versionCrossCheck: VersionCrossCheck
@@ -81,6 +86,22 @@ export interface DshLaunchInfo {
   logFiles: LaunchLogFileEntry[]
   /** external takeover command-line fragment (≤300 chars); non-adopted → null. */
   externalCommandLine: string | null
+  /**
+   * 0.1.14 第 16 个可选字段（design §0.5/§3.6）：token 契约档（T 路径）下
+   * openInBrowser 外发的带 token banner URL；null = 旧契约（直连裸 URL 原样）
+   * 或降级快照。既有 15 字段消费者零破坏；D3：该值仅存内存快照，registry
+   * （instance.json）零新增字段、零 token 落盘；状态栏/详情卡不渲染本字段。
+   */
+  externalUrl?: string | null
+  /**
+   * 0.1.16 第 17 个可选字段（#16 externalUrl 同型 additive 先例，既有 16 字段
+   * 消费者零破坏）：dsh 进程真实创建时刻（OS 报告，ISO-8601 UTC 存储；registry
+   * processStartedAt 透传）。与 startedAt（接管/记录时刻）语义分离（ADR-39）：
+   * null = 查询失败 / 超时 / 非 win32 / 旧记录无字段 → 详情卡「启动时间」显示
+   * 「未知」，**绝不回退显示 startedAt**（ADR-40④：两种语义不得再搅进一个格子）。
+   * 降级快照随 rec 保留——进程事实与会话降级正交（degrade 不清除本字段）。
+   */
+  processStartedAt?: string | null
 }
 
 /** Minimal resolver-hit shape (= dshResolver.DshBinInfo, duplicated structurally
@@ -108,6 +129,8 @@ export interface LaunchInfoInput {
     managedBy: 'extension' | 'external' | 'managed-own'
     startedAt: string
     launchMode?: 'start' | 'direct'
+    /** 0.1.16: process creation instant (ISO-8601 UTC) — pass-through, #98. */
+    processStartedAt?: string | null
   } | null
   /** Runtime state surface (fallbacks when rec is absent). */
   port?: number | null
@@ -116,6 +139,8 @@ export interface LaunchInfoInput {
   channel?: string
   /** External takeover command line (truncated to 300 here, defensively). */
   externalCommandLine?: string | null
+  /** 0.1.14: token-contract (T path) external URL; degraded snapshots force null. */
+  externalUrl?: string | null
   /** THIS launch's managed log (existence-filtered into logFiles). */
   launchLogFile?: string | null
   /** Degradation switch: clears version/bin fields (user-stop / disconnect /
@@ -173,6 +198,10 @@ export function buildLaunchInfo(input: LaunchInfoInput): DshLaunchInfo {
   const rawCmdline = input.externalCommandLine
   const externalCommandLine =
     typeof rawCmdline === 'string' && rawCmdline.length > 0 ? rawCmdline.slice(0, EXTERNAL_CMDLINE_MAX) : null
+  // 0.1.14: the external URL only exists on a FULL (non-degraded) managed
+  // token-contract snapshot; degrade (external takeover / user-stop /
+  // disconnect) honestly nulls it alongside the version/bin fields.
+  const externalUrl = degrade ? null : (typeof input.externalUrl === 'string' && input.externalUrl.length > 0 ? input.externalUrl : null)
   const candidates: LaunchLogFileEntry[] = [
     ...(input.launchLogFile !== null && input.launchLogFile !== undefined && input.launchLogFile.length > 0
       ? [{ label: path.basename(input.launchLogFile), path: input.launchLogFile }]
@@ -196,7 +225,28 @@ export function buildLaunchInfo(input: LaunchInfoInput): DshLaunchInfo {
     startedAt: rec?.startedAt ?? null,
     logFiles: candidates.filter((c) => isExistingFile(c.path)),
     externalCommandLine,
+    externalUrl,
+    // 0.1.16 #98: pass-through from the record (the process fact is ORTHOGONAL
+    // to session degradation — degrade does NOT clear this field; a record
+    // without it assembles null → the card shows 未知, never startedAt).
+    processStartedAt: rec?.processStartedAt ?? null,
   }
+}
+
+/**
+ * 0.1.16 #98 (§3.5-4): render an ISO-8601 timestamp in the LOCAL timezone as
+ * `yyyy-MM-dd HH:mm:ss` (zero-padded). Extension-side baking only — zero page
+ * script participation (#90 lesson: the display surface never depends on the
+ * page script being alive). Storage stays ISO-8601 UTC, rendering is always
+ * local — the store/display semantic split (§五-3). null/undefined/empty/
+ * unparseable → null (the caller renders 未知; never a guessed value).
+ */
+export function formatLocalTimestamp(iso: string | null | undefined): string | null {
+  if (typeof iso !== 'string' || iso.length === 0) return null
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return null
+  const p2 = (n: number): string => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}`
 }
 
 /** Status-bar text, single point (§4.7.3a/§4.7.7). ready renders the port and,

@@ -23,6 +23,8 @@ import * as path from 'node:path'
 import * as vscode from 'vscode'
 import { DshRuntime, type RuntimeState } from './runtime'
 import { buildDetailsHtml, type DetailsPhase } from './webviewHtml'
+import { normalizeChannel } from './channelSelect'
+import { appendDecisionLog } from './paths'
 
 const VIEW_ID = 'dsh.details'
 
@@ -33,6 +35,7 @@ type DetailsMessage =
   | { type: 'updateRuntime' }
   | { type: 'restart' }
   | { type: 'openPanel' }
+  | { type: 'setChannel'; channel?: string } // 0.1.15 #84: the ready-card switcher uplink
 
 export class DshDetailsProvider implements vscode.WebviewViewProvider {
   static readonly viewId = VIEW_ID
@@ -50,6 +53,12 @@ export class DshDetailsProvider implements vscode.WebviewViewProvider {
 
   resolveWebviewView(webviewView: vscode.WebviewView): void {
     this.view = webviewView
+    // 0.1.15 #85: explicit view title (VSCode-side tab-title fallback fix;
+    // verbatim vs the manifest views name; container title「DSH」untouched).
+    webviewView.title = 'DSH 配置'
+    // 0.1.16 #95 (E1 evidence, permanent): readback right after the #85 set —
+    // same evidence line as the panel resolve (webview.ts), [details]-prefixed.
+    appendDecisionLog(`[details] resolve: title set='DSH 配置' readback='${webviewView.title}' (E1, 0.1.16)`)
     webviewView.webview.options = {
       enableScripts: true,
       localResourceRoots: [],
@@ -80,9 +89,18 @@ export class DshDetailsProvider implements vscode.WebviewViewProvider {
     const info = this.runtime.getLaunchInfo()
     const state = this.runtime.state
     const phase = derivePhase(state, info)
+    // 0.1.15 #84/#90①: the render passes the runtime cspSource (never a
+    // guessed scheme) and the normalized CONFIG channel — a mismatch with the
+    // running snapshot channel renders the highlighted 「立即重启以生效」
+    // button (the switcher wrote the config; the restart is user-driven).
+    const cfgChannel = normalizeChannel(
+      vscode.workspace.getConfiguration('dsh').get<string>('channel', 'latest'),
+    ).channel
     view.webview.html = buildDetailsHtml(info, phase, {
       errorMessage: this.runtime.errorMessage,
       launching: state === 'starting' && info !== null,
+      cspSource: view.webview.cspSource,
+      configChannel: info !== null ? cfgChannel : null,
     })
     this.dirty = false
     void view.webview.postMessage({ type: 'launchInfo', info })
@@ -128,6 +146,30 @@ export class DshDetailsProvider implements vscode.WebviewViewProvider {
       case 'restart':
         void vscode.commands.executeCommand('dsh.restart')
         break
+      case 'setChannel': {
+        // 0.1.15 #84: the ready-card switcher — write order FIXED (PP-10-5):
+        // normalize → writeChannel → writeChannelSelected=true → runtime
+        // setChannel (the restart chain must launch the new channel) → re-render
+        // (the pending-restart highlighted button appears; never auto-restarts).
+        const raw = typeof msg.channel === 'string' ? msg.channel : ''
+        const norm = normalizeChannel(raw)
+        if (norm.normalized) {
+          appendDecisionLog(`[details] setChannel '${raw}' is not a published dist-tag; normalizing to '${norm.channel}' (ADR-29)`)
+        }
+        const config = vscode.workspace.getConfiguration('dsh')
+        try {
+          await config.update('channel', norm.channel, vscode.ConfigurationTarget.Global)
+          await config.update('channelSelected', true, vscode.ConfigurationTarget.Global)
+        } catch (err) {
+          appendDecisionLog(`[details] setChannel config write failed (${(err as Error).message}); keeping the current channel (honest degradation)`)
+          void vscode.window.showWarningMessage('通道写入失败；沿用当前通道（详见 runtime.log）。')
+          break
+        }
+        this.runtime.setChannel(norm.channel)
+        appendDecisionLog(`[details] setChannel: wrote channel='${norm.channel}' + channelSelected=true; restart required to take effect (not auto-restarted)`)
+        this.render()
+        break
+      }
       case 'openPanel':
         try {
           await vscode.commands.executeCommand('dsh.panel.focus')
