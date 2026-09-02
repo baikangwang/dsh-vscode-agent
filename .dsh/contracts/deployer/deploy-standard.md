@@ -54,6 +54,7 @@ npm run package                 # vsce package --no-dependencies → dsh-vscode-
 | 3 | webview CSP | 须 `style-src 'unsafe-inline'; script-src 'unsafe-inline'` 放行 VSCode 注入（Bug C），否则面板无样式、卡 `initializing` |
 | 4 | 外部接管 pid | `adoptedPid` 必须持久化，否则注册表 `dsh.pid` 恒 null → 最后窗口不关停（Bug B） |
 | 5 | 防误杀 | 外部实例唯经 netstat + 命令行校验后接管；关停前三重复核，任一失败不杀（安全侧） |
+| 6 | 外网出口 | 本机直连外网常被断（connection reset/timeout）；外网操作（git push/fetch、npm registry）须显式走本地代理：`git -c http.proxy=http://127.0.0.1:10808 -c https.proxy=http://127.0.0.1:10808 <cmd>`；DSH 沙箱内 GCM 无法交互提示凭据（命名管道被禁）→ push 前先在普通终端带同代理参数推/拉一次，缓存凭据 |
 
 ## 部署/发布报告
 写入 `.dsh/tmp/deployer/deploy_{timestamp}.json`：

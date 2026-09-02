@@ -29,6 +29,9 @@
   `paths.ts` 支持用环境变量（如 `DSH_VSCODE_DATA_DIR`）覆盖以便无头测试
 - 生命周期仲裁原则：**三重防误杀**（pid 存活 + 端口仍监听 + 页面含 `__DSH_BOOT__`）缺一不杀；
   外部实例经 `netstat`/PowerShell CIM 校验命令行含 dsh 特征后才接管
+- **外网出口**：本机直连外网常被断；npm/npx/git 外网操作须显式走本地代理 `http://127.0.0.1:10808`
+  （`$env:HTTPS_PROXY='http://127.0.0.1:10808'` 或 `git -c http.proxy=… -c https.proxy=…`）；
+  DSH 沙箱内 git 无法交互提示凭据（GCM 命名管道被禁）→ 需认证的联网操作（首次 push/登录）由用户在本机终端执行
 
 ## 变更文件（既有工程结构 — 新增改动必须贴合）
 | 文件 | 归属层 | 职责 |
