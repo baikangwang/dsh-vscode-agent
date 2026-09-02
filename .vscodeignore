@@ -4,11 +4,12 @@ scripts/**
 node_modules/**
 .npm-cache/**
 .npm-userconfig
-.sim-tmp/**
+.sim-*/**
 tsconfig.json
 **/*.map
 **/*.ts
 docs/**
+.dsh/**
 .git/**
 .gitignore
 *.vsix

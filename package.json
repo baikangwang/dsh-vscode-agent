@@ -2,12 +2,12 @@
   "name": "dsh-vscode-agent",
   "displayName": "DSH Panel",
   "description": "DeepSeek Harness 右侧边栏面板：启动/复用 dsh web 并内嵌其 Web UI",
-  "version": "0.1.0",
+  "version": "0.1.16",
   "publisher": "dsh-vscode-agent",
   "private": true,
   "license": "MIT",
   "engines": {
-    "vscode": "^1.99.0"
+    "vscode": "^1.134.0"
   },
   "categories": [
     "Other"
@@ -15,29 +15,44 @@
   "activationEvents": [
     "onStartupFinished",
     "onView:dsh.panel",
+    "onView:dsh.details",
     "onCommand:dsh.open",
+    "onCommand:dsh.showDetails",
     "onCommand:dsh.restart",
     "onCommand:dsh.stop",
     "onCommand:dsh.openInBrowser",
-    "onCommand:dsh.updateRuntime"
+    "onCommand:dsh.updateRuntime",
+    "onCommand:dsh.chooseChannel"
   ],
   "main": "./out/extension.js",
   "contributes": {
     "viewsContainers": {
-      "auxiliarybar": [
+      "secondarySidebar": [
         {
-          "id": "dsh.viewContainer",
-          "title": "DSH",
+          "id": "dsh-viewContainer",
+          "title": "DSH 会话",
+          "icon": "media/dsh.svg"
+        },
+        {
+          "id": "dsh-configContainer",
+          "title": "DSH 配置",
           "icon": "media/dsh.svg"
         }
       ]
     },
     "views": {
-      "dsh.viewContainer": [
+      "dsh-viewContainer": [
         {
           "type": "webview",
           "id": "dsh.panel",
-          "name": "DSH"
+          "name": "DSH 会话"
+        }
+      ],
+      "dsh-configContainer": [
+        {
+          "type": "webview",
+          "id": "dsh.details",
+          "name": "DSH 配置"
         }
       ]
     },
@@ -45,6 +60,10 @@
       {
         "command": "dsh.open",
         "title": "DSH: Open Panel"
+      },
+      {
+        "command": "dsh.showDetails",
+        "title": "DSH: Show Details"
       },
       {
         "command": "dsh.restart",
@@ -61,6 +80,10 @@
       {
         "command": "dsh.updateRuntime",
         "title": "DSH: Update Runtime"
+      },
+      {
+        "command": "dsh.chooseChannel",
+        "title": "DSH: 选择 dsh 通道"
       }
     ],
     "configuration": {
@@ -76,15 +99,28 @@
           "default": "latest",
           "enum": [
             "latest",
-            "preview"
+            "next",
+            "alpha"
           ],
-          "description": "dsh 运行时版本通道；每次启动自动检查并更新，离线时回退 npx 缓存。"
+          "enumDescriptions": [
+            "稳定通道（rc 版本）——经典启动契约，面板直连可用",
+            "预发布前瞻——当前与 latest 相同，上游发布新 rc 时先于 latest",
+            "最新实验通道——含 browser-auth 新特性，启动后带访问 token、面板经本地代理接入；首次冷拉取可能需数分钟"
+          ],
+          "description": "dsh 运行时版本通道（latest/next/alpha 三个 npm dist-tag；旧值 preview 非有效 dist-tag，运行时按 latest 处理）。启动时 best-effort 检查更新（24h 新鲜度窗口，离线用已装版本），版本过期时对 npx 缓存中的命中目录原地刷新（复用 npx 已安装的 dsh，不产生第二份安装）。改选经重启 dsh 生效（命令面板「DSH: 选择 dsh 通道」或本设置）。",
+          "markdownDescription": "dsh 运行时版本通道（`latest`/`next`/`alpha` 三个 npm dist-tag；旧值 `preview` 非有效 dist-tag，运行时按 `latest` 处理）。启动时 best-effort 检查更新（24h 新鲜度窗口，离线用已装版本），版本过期时对 npx 缓存中的命中目录原地刷新（复用 npx 已安装的 dsh，不产生第二份安装）。改选经**重启 dsh** 生效（命令面板 `DSH: 选择 dsh 通道` 或本设置）。"
+        },
+        "dsh.channelSelected": {
+          "type": "boolean",
+          "default": false,
+          "scope": "window",
+          "description": "首启通道选择标志（内部）：false = 用户尚未确认过通道（扩展启动时先弹通道选择，选后才启动 dsh）；选择成功后置 true、不再弹。取消选择（Esc）不置本标志——下次启动再次询问。"
         },
         "dsh.command": {
           "type": "string",
           "default": "",
-          "description": "自定义 dsh 启动命令（留空自动解析：npx @deepseek-ai/dsh）。示例：dsh web --port 3080。",
-          "markdownDescription": "自定义 dsh 启动命令（留空自动解析：`npx @deepseek-ai/dsh`）。示例：`dsh web --port 3080`。"
+          "description": "自定义 dsh 启动命令（留空自动解析：npx @deepseek-ai/dsh）。示例：dsh web --port 3080。注意：自定义命令不保证无控制台窗口（遗留边界）。",
+          "markdownDescription": "自定义 dsh 启动命令（留空自动解析：`npx @deepseek-ai/dsh`）。示例：`dsh web --port 3080`。注意：自定义命令不保证无控制台窗口（遗留边界）。"
         },
         "dsh.autoStart": {
           "type": "boolean",
@@ -100,6 +136,16 @@
           "type": "string",
           "default": "",
           "description": "DSH_HOME 目录（留空 = dsh 默认 ~/.dsh，与浏览器版共享会话）。"
+        },
+        "dsh.probeIntervalSec": {
+          "type": "number",
+          "default": 30,
+          "description": "detached dsh 的存活探活周期（秒；0 = 关闭探活）。dsh 为独立常驻进程，扩展不再监听其 exit，改由周期性 __DSH_BOOT__ 探活判定其生死并（在本窗连接中）受退避上限约束地重拉。"
+        },
+        "dsh.consoleVisible": {
+          "type": "boolean",
+          "default": true,
+          "description": "true = dsh 运行于自持的常驻可见控制台（其全部子进程共享该控制台，结构性零弹窗；该窗口即 dsh 服务窗，关闭窗口 = 停止 dsh，不会自动重拉）；false = 完全隐藏（沙箱面已知闪窗取舍，上游修复 windowsHide 后可切回）。"
         }
       }
     }

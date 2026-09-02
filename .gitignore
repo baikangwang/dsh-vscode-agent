@@ -4,3 +4,9 @@ out/
 .npm-cache/
 .npm-userconfig
 .sim-tmp/
+# .dsh 敏捷模式足迹：仅共享 契约/项目skills/技术骨架，其余（tmp/reports/sshkey 等）保持忽略
+.dsh/*
+!.dsh/contracts/
+!.dsh/skills/
+!.dsh/profile.yaml
+.vscode/
