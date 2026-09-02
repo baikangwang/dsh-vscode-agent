@@ -3534,7 +3534,7 @@ async function main() {
     check('PU-9③c dsh.chooseChannel 命令注册 + activationEvents（QuickPick 重入口可达）',
       Array.isArray(pkgSim.contributes.commands) && pkgSim.contributes.commands.some((c) => c.command === 'dsh.chooseChannel') &&
       Array.isArray(pkgSim.activationEvents) && pkgSim.activationEvents.includes('onCommand:dsh.chooseChannel'))
-    check('PU-9③d 版本 0.1.15（发布单点）', pkgSim.version === '0.1.15')
+    check('PU-9③d 版本 0.1.16（发布单点）', pkgSim.version === '0.1.16')
     check('PU-9④ 回归聚合门：PU-1..8 + PP-8 全族此前零失败', failures === 0)
 
     // ==================== 0.1.15 additions (#88/#92, design §8.1/§8.2/§8.1b) ==
