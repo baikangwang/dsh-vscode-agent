@@ -1,0 +1,61 @@
+# ============================================================
+# 敏捷模式（agile）— workspace 级声明式技术骨架（形态 A）
+# v2 起本文件不被任何引擎/插件组件读取；由敏捷模式编排人格（预设内建，
+#   非外部插件）在会话开始时按需读取，确认项目骨架（tech_stack/deploy）。
+# 新项目接入：在本 workspace 的 .dsh/ 下新建本文件即生效（零代码）。
+# ============================================================
+meta:
+  kind: agile-project
+  version: 1
+  # 项目标识（用于项目级 skill 命名与契约路由）
+  project: dsh-vscode-agent
+  # 关联的 workspace 标题（display 用）
+  title: dsh-vscode-agent (TypeScript / VS Code Extension)
+
+# 技术栈骨架 —— 引擎据此选择构建/测试/校验行为，不注入模型自由文本
+tech_stack:
+  language: typescript
+  runtime: vscode-extension      # VS Code Extension API（engines.vscode ^1.134.0）
+  build:
+    tool: tsc
+    compile: npm run compile     # tsc -p ./ → out/
+    package: npm run package     # vsce package → *.vsix
+  node: ">=20"
+  test:
+    runner: node
+    unit: node scripts/sim.mjs   # 纯 Node 无头生命周期验收
+    gui: docs/联调测试剧本.md      # 需真实 VSCode 的 GUI 联调
+  module_layout:               # 模块/依赖分层（QA 代码审计 C2 检查项）
+    src:
+      - extension.ts          # 激活/命令/配置/状态栏/生命周期钩子（vscode 耦合）
+      - webview.ts            # 右侧边栏 iframe 面板（vscode 耦合）
+      - runtime.ts            # 启动路径编排（纯 Node）
+      - instance.ts           # 实例注册表 + 启动锁 + pid/端口校验（纯 Node）
+      - dshProcess.ts         # dsh 子进程监督（纯 Node）
+      - paths.ts              # 数据目录（纯 Node）
+  isolation:
+    - "纯 Node 层（runtime/instance/dshProcess/paths）不 import 'vscode'，可独立无头测试"
+    - "vscode 耦合层（extension/webview）仅经 runtime 订阅状态，不直连 dsh 进程"
+  data_dir: "%LOCALAPPDATA%\\DshVscode"   # 实例注册表/锁/日志
+
+# 部署骨架 —— 引擎据此生成打包/发布校验（非服务器部署，见 deploy-standard.md）
+deploy:
+  kind: vscode-extension        # 分发物为 VSIX，非容器/服务
+  artifact: dsh-vscode-agent-*.vsix
+  packager: vsce                # vsce package --no-dependencies
+  publisher: dsh-vscode-agent
+  engines_vscode: "^1.134.0"
+  distribution:
+    - offline: "code --install-extension <vsix>  # 真装离线安装"
+    - asset: media/dsh.svg       # 侧边栏容器图标
+    - ignore: ".vscodeignore 打包排除（node_modules/.npm-cache/src/out/…）"
+  registry_data: "%LOCALAPPDATA%\\DshVscode"   # 生命周期仲裁数据与服务发现
+
+# 安全/约束红线 —— 2026-08-25 v2 起不再由引擎守卫读取（agile-dev-host 已删除）。
+# 红线改为契约规则：由 .dsh/contracts/_shared/engineering-baseline.md（分支管理）承载，
+# 编排人格 + 角色契约要求模型遵守；工具层由 dsh 原生 sandbox 模式（workspace-write）
+# + approval（ask）兜底。下方结构保留为项目事实声明（供契约/人工作为依据），不再有代码读取：
+# security:
+#   branch_policy:
+#     ai_forbidden_branches: [main, master]
+#     ai_allowed: [develop, feature-*, fix-*]
