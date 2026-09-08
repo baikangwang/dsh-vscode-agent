@@ -109,7 +109,7 @@ Webview(页面)                           Extension host
 - **风险与缓解**：
   - 反向 `postMessage`（host→webview）在页面刚建时仍可能丢——已由 `webviewReady` 握手 + 本设计 ack 保险兜底；
   - `retainContextWhenHidden:false` 下页面重载会重发 `webviewReady` → 每次重载都会触发 push，天然自愈（加固既有效）。
-  - 无法在无头环境直接观测真实 webview 渲染：需在 QA 阶段把**消息往返**做成可测单元（用事件探针注入 fake WebviewView），并保留真机联调（`REQ_USER`）作为最终判定。
+  - 无法在无头环境直接观测真实 webview 渲染：需在 QA 阶段把**消息往返**做成可测单元（用事件探针注入 fake WebviewView），并保留真机联调（`REQ_USER`）作为最最终判定定。
 
 ---
 
@@ -125,7 +125,7 @@ Webview(页面)                           Extension host
 
 - 消息量极小：每状态变化 1 条 `state`（现成）+ 页面 1 条 `stateAck`（新增），均为刚性小 JSON，无轮询、无新增定时器热循环；
 - ack 超时兜底仅在"应 ack 未 ack"时触发一次补推，开销可忽略；
-- 日志追加为异步 `fs.appendFileSync` 短行，现有 `rlog` 同款，不影响面板首屏。
+- 日志追加为异步 `fs.appendFileSync` 短行，现有 `rlog` 同款，不影响范围板首屏。
 
 ---
 

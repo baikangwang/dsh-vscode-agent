@@ -157,7 +157,7 @@ resolveWebviewView():
 
 页面脚本保留为**增强层**（工具栏、错误文案、state 更新显示），而非**必需层**；若脚本不跑，至少 dsh UI 已显示（iframe 自载），不再卡 initializing。
 
-> **★ 硬约束（去硬编码，用户评审意见）**：v4 烘焙进 `<iframe src>` 的 url / 端口**一律运行时驱动，必须来自 `DshRuntime.url`**（其在运行时由端口解析 / `dsh.port` 配置 / 实际探测得到，见 §八-8.3）。**任何处（iframe src、html 模板、host 拼接、页面脚本）不得出现 `127.0.0.1` / `3080` / `http://` 字面量写死**；iframe 基础 url 前缀（`http://127.0.0.1:`）也须**整体取自 `runtime.url`**——烘焙时直接 `src="${this.htmlEscape(runtime.url)}"`，禁止再自行拼接主机前缀或硬编码端口。此约束由 QA 代码审计 C3（无硬编码）专项核对（见 §十一-项 1/2 与跨项说明）。
+> **★ 硬约束（去硬编码，用户评审意见）**：v4 写入 `<iframe src>` 的最终 url / 端口**一律运行时驱动，必须来自 `DshRuntime.url`**（其在运行时由端口解析 / `dsh.port` 配置 / 实际探测得到，见 §八-8.3）。**任何处（iframe src、html 模板、host 拼接、页面脚本）不得出现 `127.0.0.1` / `3080` / `http://` 字面量写死**；iframe 基础 url 前缀（`http://127.0.0.1:`）也须**整体取自 `runtime.url`**——写入时直接 `src="${this.htmlEscape(runtime.url)}"`，禁止再自行拼接主机前缀或硬编码端口。此约束由 QA 代码审计 C3（无硬编码）专项核对（见 §十一-项 1/2 与跨项说明）。
 
 > 时序注意：`resolveWebviewView` 也可能发生在 ready 之前（url 未知）。此时先渲染不带 src 的占位；随后 state→ready 时由宿主**重设 html（带最终 url）** 或调用 `webviewView.webview.postMessage`。为确定性，v4 采用「ready 后重设 html / 或 html 里放 `data-url` 占位 + 脚本回填 + 宿主兜底」的双保险，见 6.4 决策。**不论走哪条路径，最终写入 iframe 的 src 都只能是 `runtime.url`（或 `runtime.url` 派生，如 None 时留空）**，绝无其它来源。
 
@@ -169,7 +169,7 @@ Extension host                                     Webview 渲染进程（页面
   openPanel reveal container
    └─ resolveWebviewView('dsh.panel')
        ├─ this.view = view
-       ├─ html = this.html(wv, url)   // <iframe src="url"> 已烘焙
+       ├─ html = this.html(wv, url)   // <iframe src="url"> 已写入最终值
        └─ html 写入 webview.webview
                                                      ┌─ 文档加载：iframe 直接按 src 加载 dsh UI（无消息依赖）
                                                      └─ 若脚本执行：向 host 发 webviewReady（增强）
@@ -180,16 +180,16 @@ Extension host                                     Webview 渲染进程（页面
 
 | 决策 | 采用 | 理由 |
 |---|---|---|
-| iframe 初始化方式 | **html 烘焙 src**（而非仅靠 setUrl 消息） | 根因是「页面脚本不执行→收不到 setUrl」；烘焙 src 让 iframe 不依赖脚本，直接显示 dsh |
-| iframe/url 来源 | 运行时 `runtime.url` 驱动 | **去硬编码基线**：url 为运行时计算结果（端口回落/配置 `dsh.port`/外部探测），烘焙 src 直接取 `runtime.url`，任何处不得出现 `127.0.0.1`/`3080`/`http://` 字面量写死 |
+| iframe 初始化方式 | **html 生成时直接写入 src**（而非仅靠 setUrl 消息） | 根因是「页面脚本不执行→收不到 setUrl」；生成时直接写入 src 让 iframe 不依赖脚本，直接显示 dsh |
+| iframe/url 来源 | 运行时 `runtime.url` 驱动 | **去硬编码基线**：url 为运行时计算结果（端口回落/配置 `dsh.port`/外部探测），生成时直接写入 src 直接取 `runtime.url`，任何处不得出现 `127.0.0.1`/`3080`/`http://` 字面量写死 |
 | 脚本角色 | **增强层非必需层** | 出现「脚本不跑」这一根因时，面板仍显示 UI；脚本负责状态栏文字/错误/工具栏等非关键增强 |
-| ready 前 resolve 的补丁 | host 在 state→ready 且 url 变化时重设 html 一次（带 url），并保留 setUrl/ack 增强 | 保证「resolve 早于 ready」的启动时序同样能烘焙到最终 url |
+| ready 前 resolve 的补丁 | host 在 state→ready 且 url 变化时重设 html 一次（带 url），并保留 setUrl/ack 增强 | 保证「resolve 早于 ready」的启动时序同样能写入最终 url |
 | 观测 | 页面脚本首行向 document.title / #state 写「page-booted」，host 与 QA 通过 iframe 加载+页面文件判据核对 | 把「webview 文档到底跑没跑」变成可抓证据，替代纯肉眼 |
-| 兜底再升级（可选） | 若 webview view 渲染面持续不可靠，备选 **WebviewPanel** 或浏览器打开 | 不在此轮实施，仅记录为 Plan B |
+| 兜底再升级（可选） | 若 webview view 渲染范围持续不可靠，备选 **WebviewPanel** 或浏览器打开 | 不在此轮实施，仅记录为 Plan B |
 
 ### 6.5 范围收敛（v4 改动文件）
 
-- 主要：`src/webview.ts`（html 烘焙 url + ready 重设 html + 页面 boot 观测）
+- 主要：`src/webview.ts`（html 生成时写入最终 url + ready 重设 html + 页面 boot 观测）
 - 不动：`runtime.ts`/`instance.ts`/`dshProcess.ts`/`paths.ts`（纯 Node 层）
 - 不改：`package.json` contributes（视图 id 配对已证实正确，无需改）
 
@@ -218,10 +218,10 @@ Extension host                                     Webview 渲染进程（页面
 
 ## 八、可维护性分析
 
-- 烘焙 src 用 `runtime.url`（现有 `DshRuntime.url`），不新增配置；语义单一（url 即 iframe 目标），符合「去硬编码/参数驱动」。
-- **url 为参数/配置驱动，非字面量**：烘焙 `<iframe src>` 只接受 `runtime.url` 这一个来源；html 模板中不留任何 `127.0.0.1` / `3080` / `http://` 字面量。iframe 基础 url 前缀整体取自 `runtime.url`，禁止在 webview 侧自行拼接主机前缀或端口。
+- 生成时直接写入 src 用 `runtime.url`（现有 `DshRuntime.url`），不新增配置；语义单一（url 即 iframe 目标），符合「去硬编码/参数驱动」。
+- **url 为参数/配置驱动，非字面量**：写入 `<iframe src>` 的最终值只接受 `runtime.url` 这一个来源；html 模板中不留任何 `127.0.0.1` / `3080` / `http://` 字面量。iframe 基础 url 前缀整体取自 `runtime.url`，禁止在 webview 侧自行拼接主机前缀或端口。
 - 观测文案集中在页面脚本局部，`dsh.panel:` 日志写口已存在（本轮沿用），grep 规则不变。
-- 增强层与必需层的职责切分清楚：html 烘焙为必需（保底显示），消息回环为增强（交互/状态），注释标注，降低后续维护认知负担。
+- 增强层与必需层的职责切分清楚：html 生成时写入最终值为必需（保底显示），消息回环为增强（交互/状态），注释标注，降低后续维护认知负担。
 
 ### 8.3 `runtime.url` 来源核实（去硬编码的既有事实）
 
@@ -233,8 +233,8 @@ Extension host                                     Webview 渲染进程（页面
 | `adopt`（L183） | `this.url = \`http://127.0.0.1:${port}\`` | ✅ 端口是（运行时探测），⚠️ **前缀是字面量** | 端口来自注册表 / `probe` / `waitForExternalStartup` 的运行时探测结果（`dsh.port` 配置或已记录真实端口），非写死；但**主机前缀 `http://127.0.0.1:` 为源码字面量硬编码** |
 
 结论：
-- **`url` 本身无硬编码 3080 默认、无写死端口**——`this.options.port` 由 `dsh.port` 配置驱动（配置缺省 3080 一旦被非 DSH 占用即回落随机并由 dsh 上报实际值）。因此烘焙用 `runtime.url` 即满足「参数/配置驱动/运行时计算」语义。
-- **发现既有硬编码点（标注，非本轮改动引入）**：`adopt()` L183 的 `http://127.0.0.1:` 前缀、以及 webview 侧 CSP `frame-src http://127.0.0.1:*` 均为字面量。**v4 烘焙 src 不得沿用/复制这类字面量**，只整体取 `runtime.url`；上述既有字面量点的彻底重构（如统一由 host 配置拼接、暴露为常量）属后续收敛项，可纳入 A1 链扩展或在设计评审时明确其边界，**不改变 v4 技术方案**。
+- **`url` 本身无硬编码 3080 默认、无写死端口**——`this.options.port` 由 `dsh.port` 配置驱动（配置缺省 3080 一旦被非 DSH 占用即回落随机并由 dsh 上报实际值）。因此写入最终值用 `runtime.url` 即满足「参数/配置驱动/运行时计算」语义。
+- **发现既有硬编码点（标注，非本轮改动引入）**：`adopt()` L183 的 `http://127.0.0.1:` 前缀、以及 webview 侧 CSP `frame-src http://127.0.0.1:*` 均为字面量。**v4 生成时直接写入 src 不得沿用/复制这类字面量**，只整体取 `runtime.url`；上述既有字面量点的彻底重构（如统一由 host 配置拼接、暴露为常量）属后续收敛项，可纳入 A1 链扩展或在设计评审时明确其边界，**不改变 v4 技术方案**。
 
 ---
 
@@ -250,11 +250,11 @@ Extension host                                     Webview 渲染进程（页面
 
 | 决策点 | 候选 | 约束 | 决策 | 理由 |
 |---|---|---|---|---|
-| 面板首屏渲染依赖 | ①仅 setUrl 消息（0.1.4 现状）②html 烘焙 src（v4） | 根因=页面脚本不执行→消息路径失效 | **② html 烘焙 src** + 消息作为增强层 | 使 iframe 自载 dsh 不依赖消息与脚本，直接绕开根因；对「脚本偶发不跑」免疫 |
+| 面板首屏渲染依赖 | ①仅 setUrl 消息（0.1.4 现状）②html 生成时直接写入 src（v4） | 根因=页面脚本不执行→消息路径失效 | **② html 生成时直接写入 src** + 消息作为增强层 | 使 iframe 自载 dsh 不依赖消息与脚本，直接绕开根因；对「脚本偶发不跑」免疫 |
 | 剩余消息回环 | ①去掉 ②保留为增强 | ack/补推新增完整、无害 | **② 保留**（webviewReady/stateAck/补推） | 增强层提供状态栏/错误/工具栏；不阻塞不依赖 |
 | 观测判据 | 纯肉眼 | 历史 P5：真机从未自动核对 | 页面 boot 观测（`·booted` 标题+devtools 日志）+ runtime 已有 emit/recv 链 | 把「文档是否渲染/脚本是否执行」变为可抓取证据 |
 | view/容器贡献点 | 改 id | id 实测已配对成功、emit 已在 | **不改** | A 探针证伪「未配对」；改 id 徒增风险 |
-| 兜底 Plan B | WebviewPanel/浏览器 | 架构层级大 | 作为可选 Plan B 记录 | 若 webview view 渲染面持续不可靠再升级 |
+| 兜底 Plan B | WebviewPanel/浏览器 | 架构层级大 | 作为可选 Plan B 记录 | 若 webview view 渲染范围持续不可靠再升级 |
 | iframe/url 来源 | 硬编码字面量 vs `runtime.url` | 去硬编码基线 + 端口可能由 3080 回落随机 | **仅运行时 `runtime.url` / 配置驱动**，禁止硬编码字面量（`127.0.0.1`/`3080`/`http://`） | 去硬编码基线；端口可能由 3080 回落随机，写死即失效；`runtime.url` 已是运行时计算结果 |
 
 ---
@@ -263,7 +263,7 @@ Extension host                                     Webview 渲染进程（页面
 
 | # | 事项 | 角色 |
 |---|---|---|
-| 1 | `webview.ts`：`html()` 增加可传入 `url` 并烘焙 `<iframe src>`；`resolveWebviewView` 用当前 `runtime.url` 渲染（resolve 早于 ready 时先空 src）。**子约束：src 只取自 `runtime.url`；html 模板/拼接处不得出现 `127.0.0.1`/`3080`/`http://` 字面量；iframe 基础 url 前缀整体用 `runtime.url`，禁止自行拼前缀/端口** | [开发专家] |
+| 1 | `webview.ts`：`html()` 增加可传入 `url` 并写入 `<iframe src>` 最终值；`resolveWebviewView` 用当前 `runtime.url` 渲染（resolve 早于 ready 时先空 src）。**子约束：src 只取自 `runtime.url`；html 模板/拼接处不得出现 `127.0.0.1`/`3080`/`http://` 字面量；iframe 基础 url 前缀整体用 `runtime.url`，禁止自行拼前缀/端口** | [开发专家] |
 | 2 | `webview.ts`：state→ready 且 url 变化时，若当前 html 未含该 url，则「重设 html（含 url）」一次，并保留 setUrl/ack 补推增强。**子约束：同项 1——重设写入的 src 只来自 `runtime.url`，不引入任何硬编码** | [开发专家] |
 | 3 | `webview.ts`：页面脚本首行加 boot 观测（`document.title += ' ·booted'` + `console.log`），不改坏 ack/工具栏逻辑 | [开发专家] |
 | 4 | `npm run compile` 零错误。`node scripts/sim.mjs`：**注意当前工作树为 6/8（2 FAIL：`closing last window stops dsh`、`registry dsh record cleared`）**——0.1.4 未提交改动给 `shutdownBookkeeping` 新增了 `resolvePortPid` 端口占用者校验（safe-side 硬化），但 sim 用 mock server、未满足该真实端口占用者校验，导致最后窗口关停断言失败；v4 应与开发/测试协调**适配 sim**（或回填 mock 真监听）以恢复 8/8 | [开发专家][测试专家] |
@@ -272,7 +272,7 @@ Extension host                                     Webview 渲染进程（页面
 | 7 | 真机复测场景 A；以 runtime.log `emit state=ready` + 页面 `·booted` 标题（或 devtools boot 日志）为自动化核对判据；区分「脚本执行但消息不通」vs「文档未渲染」 | [QA]（真机 [REQ_USER，用户执行]） |
 | 8 | 若第 7 步确证「文档未渲染」，按 §7.2 探针 3 再定位 1.135 回归 vs 懒加载不稳，必要时提交/跟踪 VSCode issue，并评估 Plan B | [架构师][QA] |
 
-> **跨项说明（去硬编码 C3 专项审计）**：项 1/2 的「子约束」为**不可违反约束**。开发专家实施后，须经 QA 代码审计的 **C3（无硬编码）专项核对**：grep 烘焙入 `src/webview.ts` 的 `iframe src` 赋值链，断言其只源自 `runtime.url`/配置，且源码中**新增**（v4 引入）的 `127.0.0.1`/`3080`/`http://` 字面量为 0 处。该核对结果作为项 1/2 完成的 QA 门控判据之一；C3 不通过则回环开发专家（retry ≤3）。
+> **跨项说明（去硬编码 C3 专项审计）**：项 1/2 的「子约束」为**不可违反约束**。开发专家实施后，须经 QA 代码审计的 **C3（无硬编码）专项核对**：grep 写入 `src/webview.ts` 的 `iframe src` 赋值链，断言其只源自 `runtime.url`/配置，且源码中**新增**（v4 引入）的 `127.0.0.1`/`3080`/`http://` 字面量为 0 处。该核对结果作为项 1/2 完成的 QA 门控判据之一；C3 不通过则回环开发专家（retry ≤3）。
 >
 > 评审人：QA 设计门控（[QA]）→ 用户评审 → 通过后进入开发。状态：待评审。
 
@@ -513,7 +513,7 @@ Webview(页面)                           Extension host
 - **风险与缓解**：
   - 反向 `postMessage`（host→webview）在页面刚建时仍可能丢——已由 `webviewReady` 握手 + 本设计 ack 保险兜底；
   - `retainContextWhenHidden:false` 下页面重载会重发 `webviewReady` → 每次重载都会触发 push，天然自愈（加固既有效）。
-  - 无法在无头环境直接观测真实 webview 渲染：需在 QA 阶段把**消息往返**做成可测单元（用事件探针注入 fake WebviewView），并保留真机联调（`REQ_USER`）作为最终判定。
+  - 无法在无头环境直接观测真实 webview 渲染：需在 QA 阶段把**消息往返**做成可测单元（用事件探针注入 fake WebviewView），并保留真机联调（`REQ_USER`）作为最最终判定定。
 
 ---
 
@@ -529,7 +529,7 @@ Webview(页面)                           Extension host
 
 - 消息量极小：每状态变化 1 条 `state`（现成）+ 页面 1 条 `stateAck`（新增），均为刚性小 JSON，无轮询、无新增定时器热循环；
 - ack 超时兜底仅在"应 ack 未 ack"时触发一次补推，开销可忽略；
-- 日志追加为异步 `fs.appendFileSync` 短行，现有 `rlog` 同款，不影响面板首屏。
+- 日志追加为异步 `fs.appendFileSync` 短行，现有 `rlog` 同款，不影响范围板首屏。
 
 ---
 

@@ -12,11 +12,11 @@ DeepSeek Harness 的 VSCode 右侧边栏面板：自动启动/复用 `dsh web`�
 - 已运行的 dsh（浏览器/npx 启动于 `127.0.0.1:<port>`）直接复用，不重复启动；
 - **常驻服务控制台**（默认开启）：dsh 运行于自持的经典控制台窗（标题
   `dsh service console (DSH Panel)`），其全部子进程共享该控制台，结构性消除
-  每次工具调用的闪窗；窗内启动即显示静态信息头（窗口身份、关闭后果、本次启动
+  每次工具调用的闪现窗口；窗内启动即显示静态信息头（窗口身份、关闭后果、本次启动
   日志路径、误关恢复指引；服务实时日志不回显窗内——全部输出重定向至 per-launch
   log 供取证与排障）；**关闭该窗口 = 用户停止 dsh**（不会自动重拉，面板点 ⟳
   重连即可按需重启）。极端情况下（探活瞬时误判）可能出现「面板显示已停止而
-  常驻窗仍在」——此时点重连即可重新接管，不会误杀存活的 dsh；
+  常驻控制台窗口仍在」——此时点重连即可重新接管，不会误杀存活的 dsh；
 - **dsh 版本与详情可见**：状态栏 `● DSH <端口> · v<版本>`（点击打开详情视图），
   面板工具栏 ⓘ 同样可达；详情卡含版本双源核对、bin 目录（复制/打开）、
   启动方式、端口/pid、启动时间（dsh 进程真实启动时刻，OS 报告，本地
@@ -69,7 +69,7 @@ code --install-extension dsh-vscode-agent-0.1.16.vsix
 | `dsh.autoOpenPanel` | `true` | 启动后自动展开右侧边栏面板 |
 | `dsh.dshHome` | 空 | DSH_HOME（空 = 默认 `~/.dsh`，与浏览器版共享会话） |
 | `dsh.probeIntervalSec` | `30` | detached dsh 存活探活周期（秒；0 = 关闭探活） |
-| `dsh.consoleVisible` | `true` | `true` = dsh 运行于自持常驻可见控制台（子进程共享该控制台，零弹窗；**关闭窗口 = 停止 dsh**，不自动重拉）；`false` = 完全隐藏——dsh = 0.1.3-alpha.1 时零闪窗（上游 PR #3516），但该版本未发布 npm；dsh ≥ 0.1.3-alpha.2 的 native runner 在隐藏形态存在上游弹窗回归（上游 master 未修，等上游修复版）；更低版本保留已知闪窗取舍 |
+| `dsh.consoleVisible` | `true` | `true` = dsh 运行于自持常驻可见控制台（子进程共享该控制台，无弹窗；**关闭窗口 = 停止 dsh**，不自动重拉）；`false` = 完全隐藏——dsh = 0.1.3-alpha.1 时无闪现窗口（上游 PR #3516），但该版本未发布 npm；dsh ≥ 0.1.3-alpha.2 的 native runner 在隐藏形态存在上游弹窗回归（上游 master 未修，等上游修复版）；更低版本保留已知的闪现窗口问题取舍 |
 
 ## 命令
 
@@ -85,31 +85,31 @@ code --install-extension dsh-vscode-agent-0.1.16.vsix
 
 ## 已知限制
 
-- **常驻窗载荷 = npx 形态（版本跟随 registry latest）**：常驻控制台窗内的
+- **常驻控制台窗口载荷 = npx 形态（版本跟随 registry latest）**：常驻控制台窗内的
   dsh 由 `npx --yes --prefer-offline @deepseek-ai/dsh@latest web …` 拉起——运行时版本跟随
-  npm registry 的 `latest` 标签（resolver 仍并行解析 npx 缓存命中目录供详情卡展示；npx 臂下
+  npm registry 的 `latest` 标签（resolver 仍并行解析 npx 缓存命中目录供详情卡展示；npx 启动分支下
   详情卡「自报版本」可能滞后于缓存版本，双源核对照常呈现 `self-only`/`mismatch` 档）。
-- **常驻窗就绪预算分档 60s/30s（direct 90s）**：常驻窗+npx 臂就绪预算 60s（暖缓存预期
+- **常驻控制台窗口就绪预算分档 60s/30s（direct 90s）**：常驻控制台窗口+npx 启动分支就绪预算 60s（暖缓存预期
   12-22s，冷缓存大概率覆盖）；node-bin 备轨 30s；direct 90s。冷启动（首装 / npx
   缓存冷 / AV 全盘扫描）时 dsh 本身可能超预算 → 误判超时 → 回退 direct——可用性保住、
-  常驻窗一次性丢失；回退后重开 VSCode 窗口重新尝试常驻窗模式。
-- **回退 direct = 降级态（恒 node-bin 直连）**：dsh 就绪前常驻窗宿主退出
+  常驻控制台窗口一次性丢失；回退后重开 VSCode 窗口重新尝试常驻控制台窗口模式。
+- **回退 direct = 降级态（恒 node-bin 直连）**：dsh 就绪前常驻控制台窗口宿主退出
   （任意退出码）即判启动失败并快速暴露；连续 2 次失败自动回退 direct 模式（0.1.8 形态，
   90s 就绪预算，载荷恒为 node-bin 直连、不受 npx 变体影响）。回退态**无常驻控制台窗**，
   属降级态而非验收形态（可用性保住），runtime.log 留痕可归因。
-- **marker 排障文件（永久 instrumentation）**：每次常驻窗启动（start-wait/conhost 两臂
-  同型留痕）在 `logs\dsh-<ts>.log` 旁写入三个兄弟文件——`.cmd-start`（内层 cmd 已启动）、
-  `.node-start`（载荷执行点已到达；npx 臂下对应 npx 进程层）、`.node-exit`（内容
+- **marker 排障文件（永久 instrumentation）**：每次常驻控制台窗口启动（start-wait/conhost 两分支
+  同型留痕）在 `logs\dsh-<ts>.log` 旁写入三个同批伴生文件——`.cmd-start`（内层 cmd 已启动）、
+  `.node-start`（载荷执行点已到达；npx 启动分支下对应 npx 进程层）、`.node-exit`（内容
   `node-exit-nonzero`/`node-exit-0` = 载荷自退出分类；**`node-exit-0` = 链正常走完的记录
   而非死亡信号**）。三文件存在性 + mtime 即启动链
   时间线（失败分型判读用）；随 per-launch log 同轮转清理（保留策略一致，不累积）。
-  另：resolver 子进程输出（`npm view` 等）落独立 `<log>.resolver` 兄弟文件，不进主 log。
-- **常驻窗宿主 = 构建期常量**：`START_LAUNCH_STRATEGY`（0.1.12 起默认 `'conhost'`，
+  另：resolver 子进程输出（`npm view` 等）落独立 `<log>.resolver` 同批伴生文件，不进主 log。
+- **常驻控制台窗口宿主 = 构建期常量**：`START_LAUNCH_STRATEGY`（0.1.12 起默认 `'conhost'`，
   备选 `'start'` = start /wait 形态，改回该值重打包即回切）与载荷变体
   `START_PAYLOAD_VARIANT`（当前 `'npx'`，可切回 `'node-bin'`）均仅构建期单点切换，
   不做运行期自动降级链。
-- **真机根因未定案，不作根因承诺**：0.1.9 首打版真机验证曾出现常驻窗未送达（4/4）且
-  启动退化 ~190s；受控环境未能复现该现象（E-RES-7 未定案）。0.1.11 npx 臂在 start-wait
+- **真机根因未定案，不作根因承诺**：0.1.9 首打版真机验证曾出现常驻控制台窗口未成功建立（4/4）且
+  启动退化 ~190s；受控环境未能复现该现象（E-RES-7 未定案）。0.1.11 npx 启动分支在 start-wait
   窗内真机三次闪退（R3）后，0.1.12 按预案切至 conhost 宿主形态（实验②实证该形态在同
   上下文存活）并显式化端口纪律留痕（配置/有效/载荷端口三行互证）——**绕开了失效形态，
   未解开根因**；conhost 形态下的真机存活性/时延/关窗杀树/版本行为仍为待观测项，若真机

@@ -59,8 +59,8 @@ export interface DshLaunchInfo {
   dshVersion: string | null
   /**
    * resolver version (bin-dir package.json). 0.1.14 E-VR-6 语义修订：本字段
-   * 升级为**契约档位判定主源**（judgeContractByVersion 的判定输入 =
-   * SpawnedInfo.resolved.version —— 与运行中进程双端同源的单真源）；其
+   * 升级为**契约模式判定主源**（judgeContractByVersion 的判定输入 =
+   * SpawnedInfo.resolved.version —— 与运行中进程双端同源的单一事实来源）；其
    * 「next-launch 辅助源」旧语义由本轮实施同步废弃（判定看版本）。
    */
   resolverVersion: string | null

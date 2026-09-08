@@ -369,7 +369,7 @@ export function buildNodeBinStartPayload(nodeExe: string, binJs: string, port: n
 
 /**
  * The npx chain command (0.1.6 fallback-chain shape verbatim, now also the
- * 'npx' payload arm's production payload, §4.9.8-3: "接缝已在现码" — this is
+ * 'npx' payload arm's production payload, §4.9.8-3: "衔接点已在现码" — this is
  * the SAME construction as the resolver-failure fallback below). Single
  * source for both consumers so the two stay byte-identical by construction.
  * spec = the channel variable (zero version literals, 去硬编码纪律).
@@ -899,9 +899,9 @@ export class DshProcess extends EventEmitter {
     if (this.options.consoleVisible !== true) {
       const windowSafe = judgeWindowSafeByVersion(built.resolved?.version ?? null)
       if (windowSafe === 'flashing') {
-        appendDecisionLog('[dshProcess] 运行时 < 0.1.3-alpha.1，隐藏形态存在上游闪窗取舍')
+        appendDecisionLog('[dshProcess] 运行时 < 0.1.3-alpha.1，隐藏形态存在上游闪现窗口的取舍')
       } else if (windowSafe === 'zeroFlash') {
-        appendDecisionLog(`[dshProcess] 运行时 ${built.resolved?.version ?? ''}，隐藏形态零闪窗（零闪窗承诺区 [0.1.3-alpha.1, 0.1.3-alpha.2)，上游 PR #3516）`)
+        appendDecisionLog(`[dshProcess] 运行时 ${built.resolved?.version ?? ''}，隐藏形态零闪窗（零闪窗承诺版本区间 [0.1.3-alpha.1, 0.1.3-alpha.2)，上游 PR #3516）`)
       } else if (windowSafe === 'regression') {
         appendDecisionLog('[dshProcess] WARN: dsh ≥ 0.1.3-alpha.2 native runner 在隐藏形态存在上游弹窗回归（PR #2825 引入，上游 master 未修）；零闪窗仅对 0.1.3-alpha.1 成立，该版本未发布 npm、不可经 npm 安装，建议等待上游修复版')
       }

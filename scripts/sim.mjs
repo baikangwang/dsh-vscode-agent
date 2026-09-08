@@ -1471,7 +1471,7 @@ async function main() {
       // the outer-form carrier switches from the start-wait RAW (now the
       // flip-back track, PP-3-1①②③) to the conhost inner command; the payload
       // char assertions below are UNCHANGED.
-      check('PP-2-1 outer spawn exec basename = conhost.exe（0.1.12 生产基线 = ADR-26 conhost 形态；E5/W-01：conhost 窗即目标常驻窗）', cap !== undefined && isConhostForm(cap))
+      check('PP-2-1 outer spawn exec basename = conhost.exe（0.1.12 生产基线 = ADR-26 conhost 形态；E5/W-01：conhost 窗即目标常驻控制台窗口）', cap !== undefined && isConhostForm(cap))
       check('PP-2-1 outer argv = [--, cmd, /d, /c, INNER]（INNER 作为单个 verbatim argv 元素）', cap !== undefined &&
         JSON.stringify(cap.argv.slice(0, 4)) === JSON.stringify(['--', 'cmd', '/d', '/c']) && cap.argv.length === 5)
       const inner = conhostInnerCmd(cap, DP.START_WINDOW_TITLE)
@@ -1495,7 +1495,7 @@ async function main() {
           mInner[2].includes(path.join('node_modules', '@deepseek-ai', 'dsh')) && mInner[2].endsWith(path.join('lib', 'bin.js')) &&
           mInner[3] === infoStart.logFile)
       }
-      check('PP-2-1 opts: verbatim=true + detached=true + windowsHide=false（E5/W-01：conhost 窗即目标常驻窗）+ stdio ignore×3 + unref', cap !== undefined &&
+      check('PP-2-1 opts: verbatim=true + detached=true + windowsHide=false（E5/W-01：conhost 窗即目标常驻控制台窗口）+ stdio ignore×3 + unref', cap !== undefined &&
         cap.opts.windowsVerbatimArguments === true && cap.opts.detached === true && cap.opts.windowsHide === false &&
         stdioIgnoreShape(cap.opts.stdio) && unrefCount === 1)
       check('PP-2-1 servicePid = mocked port holder (≠ wrapper child pid); resolved transparency carries the hit dir', infoStart.servicePid === holderPid && holderPid !== 4601 &&
@@ -1520,7 +1520,7 @@ async function main() {
       // 0.1.12 #58-⑤ 适配：外层载体 = conhost 内层命令（生产基线）。
       const innerP21b = npxCap !== undefined ? conhostInnerCmd(npxCap, DP.START_WINDOW_TITLE) : null
       const peeledP21b = innerP21b !== null ? peelLaunchMarkers(innerP21b) : null
-      check('PP-2-1b 常驻窗宿主仍包住 npx fallback 链（0.1.12：conhost 形态）+ npx payload 带引号 log redirect', isConhostForm(npxCap) &&
+      check('PP-2-1b 常驻控制台窗口宿主仍包住 npx fallback 链（0.1.12：conhost 形态）+ npx payload 带引号 log redirect', isConhostForm(npxCap) &&
         typeof npxCap.argv[4] === 'string' && npxCap.argv[4].includes('npx --yes --prefer-offline') && npxCap.argv[4].includes('@deepseek-ai/dsh@latest') &&
         peeledP21b !== null && peeledP21b.payload.endsWith(`>> "${npxStart.logFile}" 2>&1`) && npxStart.resolved === null)
       router.handlers.view = null
@@ -1940,7 +1940,7 @@ async function main() {
     }
 
     // ---- PP-3-1: conhost 生产基线 + start-wait flip-back 回切轨（#58-⑤ 基线反转）----
-    px('PP-3-1 常驻窗形态基线（ADR-26，0.1.12）：conhost 臂 = 生产基线；start-wait 形态 = flip-back 回切轨（构建期单点补丁）')
+    px('PP-3-1 常驻控制台窗口形态基线（ADR-26，0.1.12）：conhost 启动分支 = 生产基线；start-wait 形态 = flip-back 回切轨（构建期单点补丁）')
     // 0.1.12 #58-⑤ 基线反转的无头等价模拟: the production module now DECLARES
     // 'conhost' (⓪) and ④-⑦ assert the production module directly; the
     // flip-back track patches the ONE-LINE compiled assignment
@@ -1965,7 +1965,7 @@ async function main() {
       } catch { DPC = null }
     }
     try {
-      // (A) 生产基线（DP = conhost 臂，原 ④-⑦ 升基线）：
+      // (A) 生产基线（DP = conhost 启动分支，原 ④-⑦ 升基线）：
       // exec/argv/内层命令/spawn 选项/servicePid。
       globalThis.fetch = okFetch
       router.calls.length = 0
@@ -1980,7 +1980,7 @@ async function main() {
       const infoC = await new DP.DshProcess({ port: 3111, channel: 'latest', command: '', dshHome: '', consoleVisible: true, launchMode: 'start', resolvePortPidFn: holderFnPP3 }).start()
       const capC = router.calls.filter((c) => c.kind === 'launch').pop()
       const payloadC = conhostInnerCmd(capC, DP.START_WINDOW_TITLE)
-      // 0.1.11 适配：conhost 臂复用同一 payload 构造（PP-4-1）→ 剥 marker 后按变体形态断言。
+      // 0.1.11 适配：conhost 启动分支复用同一 payload 构造（PP-4-1）→ 剥 marker 后按变体形态断言。
       const peeledC = payloadC !== null ? peelLaunchMarkers(payloadC) : null
       check('PP-3-1④ conhost 生产基线：exec basename = conhost.exe + argv 首段 [--, cmd, /d, /c]',
         capC !== undefined && path.basename(capC.exec) === 'conhost.exe' && capC.argv[0] === '--' &&
@@ -2123,7 +2123,7 @@ async function main() {
         err33b !== null && err33b.name === 'LaunchFailure' && err33b.message.includes('within 90000ms'))
       // (c) flip-back 回切轨（start-wait 形态）同样共享 start 家族预算（分档按
       // launchMode 二值而非 launcher 变体，§4.8.3；0.1.12：DPC = 'start'
-      // flip-back 副本，生产 conhost 臂的 60s 档已由 PP-3-3① 直接覆盖）。
+      // flip-back 副本，生产 conhost 启动分支的 60s 档已由 PP-3-3① 直接覆盖）。
       if (DPC !== null) {
         globalThis.fetch = failFetch
         router.onLaunch = () => waitChild({ pid: 4722 })
@@ -2149,7 +2149,7 @@ async function main() {
         dshProcSrc.includes('export const STARTUP_TIMEOUT_MS_START = 30_000'))
 
       // ---- PP-3-4: 2 early-deaths -> direct fallback + degradation rlog ---
-      px('PP-3-4 回退与 direct 逐位回归：早退 ×2（exit 0 亦败）→ 第 3 次 direct + 无常驻窗降级态声明')
+      px('PP-3-4 回退与 direct 逐位回归：早退 ×2（exit 0 亦败）→ 第 3 次 direct + 无常驻窗口降级态声明')
       globalThis.fetch = step2FailPP3() // step2 fails once -> managed-launch path
       seedInst({ dsh: null, windows: [] })
       releaseStartupLock()
@@ -2157,7 +2157,7 @@ async function main() {
       let seq34 = 0
       router.onLaunch = (entry) => {
         seq34++
-        if (isStartFormPP3(entry) || isConhostForm(entry)) return waitChild({ pid: 4730 + seq34, exitCode: 0 }) // 内层早死形态：常驻窗宿主随内层退出
+        if (isStartFormPP3(entry) || isConhostForm(entry)) return waitChild({ pid: 4730 + seq34, exitCode: 0 }) // 内层早死形态：常驻控制台窗口宿主随内层退出
         writeBannerPP3(entry) // the surviving direct attempt (degraded random port)
         return fakeChild({ pid: 4730 + seq34, code: 0 })
       }
@@ -2173,8 +2173,8 @@ async function main() {
       check('PP-3-4② direct 形态逐位回归（PP-2-2 一致，含 0.1.8 参数化）：node exec + 无 verbatim + windowsHide=!consoleVisible(false) + stdio fd',
         d34 !== undefined && path.basename(d34.exec) === path.basename(process.execPath) &&
         d34.opts.windowsVerbatimArguments === undefined && d34.opts.windowsHide === false && stdioFdShape(d34.opts.stdio))
-      check('PP-3-4③ rlog 降级声明双锚点：falling back to direct + 无常驻窗降级态（违背 ADR-20 常驻窗裁决，不作验收形态）',
-        trace34.includes('falling back to direct') && trace34.includes('无常驻窗降级态'))
+      check('PP-3-4③ rlog 降级声明双锚点：falling back to direct + 无常驻窗口降级态（违背 ADR-20 常驻控制台窗口裁决，不作验收形态）',
+        trace34.includes('falling back to direct') && trace34.includes('无常驻窗口降级态'))
       check('PP-3-4④ 早退计入 startLaunchFailures（PP-3-2④ 计数联动）：failure #1/#2 轨迹 + 快信号文案锚点',
         trace34.includes('start-launch failure #1') && trace34.includes('start-launch failure #2') &&
         trace34.includes('exited before readiness'))
@@ -2242,7 +2242,7 @@ async function main() {
     }
 
     // ---- PP-4-1: marker payload 契约 ----
-    px('PP-4-1 marker payload 契约：前缀两段 echo + 条件退出组逐字（§4.9.1 原文）+ 零 %DATE%/%TIME% + 兄弟文件路径 + 常量集中')
+    px('PP-4-1 marker payload 契约：前缀两段 echo + 条件退出组逐字（§4.9.1 原文）+ 零 %DATE%/%TIME% + 同批伴生文件路径 + 常量集中')
     globalThis.fetch = okFetch
     const off41 = rlogOffset()
     router.calls.length = 0
@@ -2250,7 +2250,7 @@ async function main() {
     router.onLaunch = () => launcherMock4({ pid: 4750 })
     const info41 = await new DP.DshProcess({ port: 3120, channel: 'latest', command: '', dshHome: '', consoleVisible: true, launchMode: 'start', resolvePortPidFn: holderFn4 }).start()
     const cap41 = router.calls.filter((c) => c.kind === 'launch').pop()
-    // 0.1.12 #58-⑤ 适配：生产常驻臂 = conhost → 内层命令 = title 前缀剥离后的 <payload+marker>。
+    // 0.1.12 #58-⑤ 适配：生产常驻分支 = conhost → 内层命令 = title 前缀剥离后的 <payload+marker>。
     const inner41 = cap41 !== undefined ? conhostInnerCmd(cap41, DP.START_WINDOW_TITLE) : null
     const peeled41 = inner41 !== null ? peelLaunchMarkers(inner41) : null
     const log41 = info41.logFile
@@ -2260,7 +2260,7 @@ async function main() {
     check('PP-4-1② marker 后缀逐字：& (if errorlevel 1 (echo node-exit-nonzero >> "<LOG>.node-exit") else (echo node-exit-0 >> "<LOG>.node-exit"))（arm-4/4b 两值均写）',
       peeled41 !== null && inner41 !== null &&
       inner41.endsWith(` & (if errorlevel 1 (echo node-exit-nonzero >> "${log41}.node-exit") else (echo node-exit-0 >> "${log41}.node-exit"))`))
-    check('PP-4-1③ marker 文件路径 = per-launch log 同族兄弟（剥引号实测路径 = log 路径 + §4.9.1 后缀；paths 缝 dshLogMarkerFile 同值）',
+    check('PP-4-1③ marker 文件路径 = per-launch log 同族伴生文件（剥引号实测路径 = log 路径 + §4.9.1 后缀；paths 缝 dshLogMarkerFile 同值）',
       peeled41 !== null && log41.length > 0 &&
       peeled41.cmdStartFile === PATH.dshLogMarkerFile(log41, PATH.MARKER_SUFFIX_CMD_START) &&
       peeled41.nodeStartFile === PATH.dshLogMarkerFile(log41, PATH.MARKER_SUFFIX_NODE_START) &&
@@ -2280,7 +2280,7 @@ async function main() {
     check('PP-4-1⑤ 纯函数单元：wrapStartPayloadWithMarkers 对合成载荷产出 §4.9.1 原文（无路径依赖）',
       DP.wrapStartPayloadWithMarkers('PAYLOAD', 'LOG') ===
       'echo inner-cmd-start >> "LOG.cmd-start" & echo node-start >> "LOG.node-start" & PAYLOAD & (if errorlevel 1 (echo node-exit-nonzero >> "LOG.node-exit") else (echo node-exit-0 >> "LOG.node-exit"))')
-    check('PP-4-1⑥ marker 包裹零形态外溢：生产常驻臂（0.1.12 = conhost，ADR-26）内层命令 = title <TITLE> && "<payload+marker>"（E5 形态）+ verbatim + detached + windowsHide:false + stdio ignore×3',
+    check('PP-4-1⑥ marker 包裹零形态外溢：生产常驻分支（0.1.12 = conhost，ADR-26）内层命令 = title <TITLE> && "<payload+marker>"（E5 形态）+ verbatim + detached + windowsHide:false + stdio ignore×3',
       cap41 !== undefined && conhostInnerCmd(cap41, DP.START_WINDOW_TITLE) !== null &&
       cap41.opts.windowsVerbatimArguments === true && cap41.opts.detached === true && cap41.opts.windowsHide === false &&
       stdioIgnoreShape(cap41.opts.stdio))
@@ -2310,11 +2310,11 @@ async function main() {
       check('PP-4-2① 主 log 轮转保留 3 份（既有策略不动）',
         ['dsh-20260101-000003.log', 'dsh-20260101-000004.log', 'dsh-20260101-000005.log'].every((n) => fs.existsSync(path.join(rot, n))) &&
         !fs.existsSync(path.join(rot, 'dsh-20260101-000001.log')) && !fs.existsSync(path.join(rot, 'dsh-20260101-000002.log')))
-      check('PP-4-2② 被轮转 log 的 marker 兄弟同批清理（后缀族全删；0.1.12 起 4 后缀 × 2 log = 8 个——纳入同轮转批次，不独立膨胀 §4.9.1）',
+      check('PP-4-2② 被轮转 log 的 marker 伴生文件同批清理（后缀族全删；0.1.12 起 4 后缀 × 2 log = 8 个——纳入同轮转批次，不独立膨胀 §4.9.1）',
         ['dsh-20260101-000001.log', 'dsh-20260101-000002.log']
           .flatMap((n) => PATH.DSH_LOG_MARKER_SUFFIXES.map((s) => n + s))
           .every((f) => !fs.existsSync(path.join(rot, f))))
-      check('PP-4-2③ 保留 log 的 marker 兄弟原样（marker 生命周期随其 base log）',
+      check('PP-4-2③ 保留 log 的 marker 伴生文件原样（marker 生命周期随其 base log）',
         ['dsh-20260101-000003.log', 'dsh-20260101-000004.log', 'dsh-20260101-000005.log']
           .flatMap((n) => PATH.DSH_LOG_MARKER_SUFFIXES.map((s) => n + s))
           .every((f) => fs.existsSync(path.join(rot, f))))
@@ -2323,9 +2323,9 @@ async function main() {
       fs.rmSync(rot, { recursive: true, force: true })
     }
 
-    // ---- PP-4-3 / PP-4-4: WMI 臂契约（分支未选中 → SKIP，#47 分支注记）----
+    // ---- PP-4-3 / PP-4-4: WMI 启动分支契约（分支未选中 → SKIP，#47 分支注记）----
     skip('PP-4-3 WMI spawn 契约（EncodedCommand 构造/ReturnValue 映射）',
-      '分支未选中：0.1.11 = npx 载荷臂（用户三选一裁决=方案 A，§4.9.8-5 臂重排）；WMI 条件推迟 0.1.12（#46 条件任务），实施时按 PP-4-3 落地')
+      '分支未选中：0.1.11 = npx 载荷分支（用户三选一裁决=方案 A，§4.9.8-5 分支重排）；WMI 条件推迟 0.1.12（#46 条件任务），实施时按 PP-4-3 落地')
     skip('PP-4-4 WMI 信号语义分叉断言（launcher exit 0 ≠ 失败）',
       '分支未选中：同 PP-4-3（escape arm 未实施，无契约可断言；SKIP 不算失败）')
 
@@ -2337,7 +2337,7 @@ async function main() {
   }
 
   // ==================== 0.1.11 PP-5 (design §11.1 v2.13, ADR-24补充 #51/#52) ====================
-  px('PP-5 npx 载荷臂契约（§4.9.8）：argv 逐字符 / 60s 分档时钟注入 / node-bin 备轨回归 / direct 恒 node-bin')
+  px('PP-5 npx 载荷分支契约（§4.9.8）：argv 逐字符 / 60s 分档时钟注入 / node-bin 备轨回归 / direct 恒 node-bin')
   {
     resetResolverState()
     const origFetch = globalThis.fetch
@@ -2372,7 +2372,7 @@ async function main() {
       return c
     }
     const isStartForm5 = (c) => c !== undefined && c.argv.length === 4 && /^start "/.test(c.argv[3])
-    const isResidentForm5 = (c) => isStartForm5(c) || isConhostForm(c) // 0.1.12 #58-⑤：常驻家族双臂分类
+    const isResidentForm5 = (c) => isStartForm5(c) || isConhostForm(c) // 0.1.12 #58-⑤：常驻家族双分支分类
     const BANNER_PORT5 = 3198
     const writeBanner5 = (entry) => {
       let log = null
@@ -2533,19 +2533,19 @@ async function main() {
         m53 !== null && m53[1] === process.env.DSH_NODE_EXE &&
         m53[2].includes(path.join('node_modules', '@deepseek-ai', 'dsh')) && m53[2].endsWith(path.join('lib', 'bin.js')) &&
         m53[3] === info53.logFile)
-      check('PP-5-3② node-bin 臂下 marker 三段包裹不变（§4.9.1 无条件、全臂共用——arm-2 语义按判读矩阵归 node 层）',
+      check('PP-5-3② node-bin 启动分支下 marker 三段包裹不变（§4.9.1 无条件、全部启动分支共用——arm-2 语义按判读矩阵归 node 层）',
         inner53 !== null && peeled53 !== null &&
         inner53.startsWith('echo inner-cmd-start >> ') &&
         inner53.endsWith(`(echo node-exit-0 >> "${info53.logFile}.node-exit"))`) &&
         inner53.includes(` & ${peeled53.payload} & (if errorlevel 1`))
     } else {
       check('PP-5-3① node-bin 载荷逐字符 = pre-0.1.11 生产形态（patched 模块构建失败）', false)
-      check('PP-5-3② node-bin 臂下 marker 三段包裹不变（patched 模块构建失败）', false)
+      check('PP-5-3② node-bin 启动分支下 marker 三段包裹不变（patched 模块构建失败）', false)
     }
-    check('PP-5-3③ 选择缝单元：startPayloadForVariant 两臂各返其臂（主臂切换点单一）',
+    check('PP-5-3③ 选择缝单元：startPayloadForVariant 两分支各返其对应载荷（主分支切换点单一）',
       DP.startPayloadForVariant('node-bin', 'NODE_BIN', 'NPX') === 'NODE_BIN' &&
       DP.startPayloadForVariant('npx', 'NODE_BIN', 'NPX') === 'NPX')
-    check('PP-5-3④ 静态断言：StartPayloadVariant 联合声明 + startPayloadForVariant(START_PAYLOAD_VARIANT 唯一调用点（主臂切换点单一可追溯）',
+    check('PP-5-3④ 静态断言：StartPayloadVariant 联合声明 + startPayloadForVariant(START_PAYLOAD_VARIANT 唯一调用点（主分支切换点单一可追溯）',
       (() => {
         const s = fs.readFileSync(path.join(process.cwd(), 'src', 'dshProcess.ts'), 'utf8')
         return s.includes("export type StartPayloadVariant = 'node-bin' | 'npx'") &&
@@ -2561,7 +2561,7 @@ async function main() {
     let seq54 = 0
     router.onLaunch = (entry) => {
       seq54++
-      if (isResidentForm5(entry)) return launcherMock5({ pid: 4770 + seq54, exitCode: 0 }) // 内层早死 → 常驻窗宿主随退（E6c；0.1.12 生产臂 = conhost）
+      if (isResidentForm5(entry)) return launcherMock5({ pid: 4770 + seq54, exitCode: 0 }) // 内层早死 → 常驻控制台窗口宿主随退（E6c；0.1.12 生产分支 = conhost）
       writeBanner5(entry) // the surviving direct attempt
       return fakeChild({ pid: 4770 + seq54, code: 0 })
     }
@@ -2570,15 +2570,15 @@ async function main() {
     await r54.start()
     const launches54 = router.calls.filter((c) => c.kind === 'launch')
     const d54 = launches54.find((c) => !isResidentForm5(c))
-    check('PP-5-4① 早退 ×2 → 第 3 次 spawn 为 direct 形态（0.1.8 回退链路不变；0.1.12：前两次为 conhost 生产臂形态）',
+    check('PP-5-4① 早退 ×2 → 第 3 次 spawn 为 direct 形态（0.1.8 回退链路不变；0.1.12：前两次为 conhost 生产分支形态）',
       launches54.length >= 3 && launches54[0] !== undefined && isResidentForm5(launches54[0]) &&
       launches54[1] !== undefined && isResidentForm5(launches54[1]) && d54 !== undefined)
     check('PP-5-4② direct 载荷 = node-bin 直连（node exec + [binJs, web, --host, --port, --no-open] 7 元 argv；无 npx 段——direct 不吃变体）',
       d54 !== undefined && path.basename(d54.exec) === path.basename(process.execPath) &&
       d54.argv[0].endsWith(path.join('lib', 'bin.js')) && d54.argv[1] === 'web' &&
       d54.argv.length === 7 && !d54.argv.includes('npx'))
-    check('PP-5-4③ 降级 rlog 双锚点（falling back to direct + 无常驻窗降级态）+ registry launchMode=direct + ready',
-      rlogSlice(off54).includes('falling back to direct') && rlogSlice(off54).includes('无常驻窗降级态') &&
+    check('PP-5-4③ 降级 rlog 双锚点（falling back to direct + 无常驻窗口降级态）+ registry launchMode=direct + ready',
+      rlogSlice(off54).includes('falling back to direct') && rlogSlice(off54).includes('无常驻窗口降级态') &&
       r54.state === 'ready' && readInstance().dsh !== null && readInstance().dsh.launchMode === 'direct')
     check('PP-5-4④ 全族零回归（PV/PW/PI/PP-1..4/PU 至此零失败）', failures === 0)
     r54.dispose()
@@ -2614,7 +2614,7 @@ async function main() {
       p.once('exit', () => resolve(p.pid))
     })
     const holderFn6 = () => ({ pid: holderPid6, address: '127.0.0.1' })
-    /** alive resident-console launcher mock（conhost 臂，0.1.12 生产基线） */
+    /** alive resident-console launcher mock（conhost 启动分支，0.1.12 生产基线） */
     const launcherMock6 = ({ pid, exitCode = null } = {}) => {
       const c = new EventEmitter()
       c.stdout = new EventEmitter()
@@ -2680,13 +2680,13 @@ async function main() {
       await r61.start()
       const launches61 = router.calls.filter((c) => c.kind === 'launch')
       const trace61 = rlogSlice(off61)
-      check('PP-6-1② 常驻臂（conhost）载荷 --port ≡ 配置端口 ≡ 单点返回值 + `payload port = <N>` 留痕（ADR-25-②，两臂同点）',
+      check('PP-6-1② 常驻分支（conhost）载荷 --port ≡ 配置端口 ≡ 单点返回值 + `payload port = <N>` 留痕（ADR-25-②，两分支同点）',
         launches61.length >= 1 && isConhostForm(launches61[0]) && payloadPort6(launches61[0]) === dec61.port &&
         trace61.includes(`payload port = ${dec61.port}`))
       check('PP-6-1③ rlog source=configured 留痕与返回枚举一致（detached launch 行携带 source）',
         trace61.includes(`detached launch (port=${dec61.port}, source=configured`))
       r61.dispose()
-      // direct 臂同点取同一端口（direct/start 单一来源不变量）。
+      // direct 启动分支同点取同一端口（direct/start 单一来源不变量）。
       globalThis.fetch = step2FailFetch6()
       seedInst({ dsh: null, windows: [] })
       releaseStartupLock()
@@ -2724,7 +2724,7 @@ async function main() {
       let seq62 = 0
       router.onLaunch = (entry) => {
         seq62++
-        if (isConhostForm(entry)) return launcherMock6({ pid: 4782 + seq62, exitCode: 0 }) // 内层早死 → 常驻窗宿主随退
+        if (isConhostForm(entry)) return launcherMock6({ pid: 4782 + seq62, exitCode: 0 }) // 内层早死 → 常驻控制台窗口宿主随退
         writeBanner6(entry) // the surviving direct attempt (degraded random port)
         return fakeChild({ pid: 4782 + seq62, code: 0 })
       }
@@ -2772,7 +2772,7 @@ async function main() {
       r63.dispose()
     }
 
-    // ---- PP-6-4: resolver 输出隔离（ADR-25-③：<log>.resolver 兄弟文件）----
+    // ---- PP-6-4: resolver 输出隔离（ADR-25-③：<log>.resolver 同批伴生文件）----
     px('PP-6-4 resolver 输出隔离（ADR-25-③）：npm view 输出落 <log>.resolver，主 log 零污染；.resolver 纳入 rotate 同批清理')
     {
       resetResolverState()
@@ -2783,9 +2783,9 @@ async function main() {
       const info64 = await new DP.DshProcess({ port: 3133, channel: 'latest', command: '', dshHome: '' }).start() // direct（fixed-port probe ok）
       const resolverLog64 = `${info64.logFile}.resolver`
       const mainLog64 = fs.existsSync(info64.logFile) ? fs.readFileSync(info64.logFile, 'utf8') : ''
-      check('PP-6-4① resolver 子进程输出（npm view 版本 token）落 <log>.resolver 兄弟文件（证据不丢，排障可查）',
+      check('PP-6-4① resolver 子进程输出（npm view 版本 token）落 <log>.resolver 同批伴生文件（证据不丢，排障可查）',
         fs.existsSync(resolverLog64) && fs.readFileSync(resolverLog64, 'utf8').includes('0.1.1-rc.2'))
-      check('PP-6-4② per-launch 主 log 不含 resolver 输出（R3 的 11B 假线索源 + parseSelfVersion 首行误读面消除）',
+      check('PP-6-4② per-launch 主 log 不含 resolver 输出（R3 的 11B 假线索源 + parseSelfVersion 首行误读风险点消除）',
         !mainLog64.includes('0.1.1-rc.2'))
       check('PP-6-4③ .resolver 后缀纳入 DSH_LOG_MARKER_SUFFIXES（marker 家族同型常量，rotate 联动数据源）',
         PATH.DSH_LOG_MARKER_SUFFIXES.includes('.resolver'))
@@ -2809,7 +2809,7 @@ async function main() {
     }
 
     // ---- PP-6-5: 全族回归 ----
-    check('PP-6-5 全族零回归（PV/PW/PI/PP-1..5/PU 至此零失败；direct 端口面与 custom-command 边界零触碰）', failures === 0)
+    check('PP-6-5 全族零回归（PV/PW/PI/PP-1..5/PU 至此零失败；direct 端口范围与 custom-command 边界零触碰）', failures === 0)
     globalThis.fetch = origFetch
     router.captureLaunch = false
     router.onLaunch = null
@@ -2817,7 +2817,7 @@ async function main() {
   }
 
   // ==================== 0.1.13 PP-7 (design §11.1 v2.17, ADR-27) ====================
-  px('PP-7 ADR-27 常驻窗静态信息头：纯 builder 单元 / 单点叠加契约（conhost 臂）/ direct-custom 零触 / 字符集安全与长度 / marker-F-PORT 家族回归')
+  px('PP-7 ADR-27 常驻控制台窗口静态信息头：纯 builder 单元 / 单点叠加契约（conhost 启动分支）/ direct-custom 零触 / 字符集安全与长度 / marker-F-PORT 家族回归')
   {
     resetResolverState()
     const origFetch7 = globalThis.fetch
@@ -2873,8 +2873,8 @@ async function main() {
       DP.withConsoleInfoHeader('PAYLOAD', HDR_LOG) === `${DP.consoleInfoHeader(HDR_LOG)} & PAYLOAD` &&
       DP.withConsoleInfoHeader('PAYLOAD', HDR_LOG) === specWithHeader('PAYLOAD', HDR_LOG))
 
-    // ---- PP-7-2: 单点叠加契约（conhost 臂；mock 捕获）----
-    px('PP-7-2 单点叠加契约（conhost 臂）：复合串 = <infoHeader> & <生产载荷>（剥 title + marker 后）；marker 三件套同族；变体两取值同型')
+    // ---- PP-7-2: 单点叠加契约（conhost 启动分支；mock 捕获）----
+    px('PP-7-2 单点叠加契约（conhost 启动分支）：复合串 = <infoHeader> & <生产载荷>（剥 title + marker 后）；marker 三件套同族；变体两取值同型')
     globalThis.fetch = okFetch7
     router.calls.length = 0
     router.captureLaunch = true
@@ -2914,7 +2914,7 @@ async function main() {
       const peeled72b = cap72b !== undefined ? peelLaunchMarkers(conhostInnerCmd(cap72b, DPB7.START_WINDOW_TITLE)) : null
       const body72b = peeled72b !== null ? stripInfoHeader(peeled72b.payload, info72b.logFile) : null
       const mNodeBin72 = body72b !== null ? /^"([^"]*)" "([^"]*)" web --host 127\.0\.0\.1 --port 3142 --no-open >> "(.*)" 2>&1$/.exec(body72b) : null
-      check('PP-7-2④ START_PAYLOAD_VARIANT 两取值复合同型：node-bin 臂下 = <infoHeader> & <node-bin 载荷>（信息头与变体正交）',
+      check('PP-7-2④ START_PAYLOAD_VARIANT 两取值复合同型：node-bin 启动分支下 = <infoHeader> & <node-bin 载荷>（信息头与变体正交）',
         peeled72b !== null && mNodeBin72 !== null && mNodeBin72[3] === info72b.logFile &&
         peeled72b.payload.startsWith(`${specInfoHeader(info72b.logFile)} & `))
     } else {
@@ -2955,7 +2955,7 @@ async function main() {
     let directAttempt73 = null
     router.onLaunch = (entry) => {
       seq73++
-      if (isConhostForm(entry)) return launcherMock7({ pid: 4820 + seq73, exitCode: 0 }) // 内层早死 → 常驻窗宿主随退
+      if (isConhostForm(entry)) return launcherMock7({ pid: 4820 + seq73, exitCode: 0 }) // 内层早死 → 常驻控制台窗口宿主随退
       writeBanner73()
       directAttempt73 = entry
       return fakeChild({ pid: 4820 + seq73, code: 0 })
@@ -3186,11 +3186,11 @@ async function main() {
     check('PP-8-1⑤ 无 banner / 缺文件 → null 不抛异常（既有 F-PORT 语义原样）',
       DP.resolveBannerFromLog(bannerFile('none', 'some other output')) === null &&
       DP.resolveBannerFromLog(path.join(dataDir, 'banner-missing.log')) === null)
-    check('PP-8-1⑥ 阈值常量单点 = 0.1.2-alpha.2（三源判定锚；判定看版本、取值看 banner）',
+    check('PP-8-1⑥ 阈值常量单点 = 0.1.2-alpha.2（三方独立证据支撑的判定锚；判定看版本、取值看 banner）',
       DP.TOKEN_AUTH_MIN_VERSION === '0.1.2-alpha.2')
 
     // ---- PP-8-2: authProxy 契约（R1-R10 + Origin-fence 断言组）--------------
-    px('PP-8-2 authProxy 契约：自举/Host/Origin 重写/不补/WS/403-401 次序/剥离/不落盘 + C 路径自铸单元')
+    px('PP-8-2 authProxy 契约：自举/Host/Origin 重写/不补/WS/403-401 次序/剥离/不落盘 + C 路径本地生成单元')
     up.validTokens.add('tok-pp82')
     const proxyLog82 = []
     const handle82 = await AP.startAuthProxy(up.port, { token: 'tok-pp82', cookie: null }, { log: (m) => proxyLog82.push(m) })
@@ -3248,7 +3248,7 @@ async function main() {
     const sameDisk82 = snapB82.size === snapA82.size && [...snapA82.keys()].every((k) => snapB82.get(k) === snapA82.get(k))
     check('PP-8-2④ stop() 端口释放（rebind 断言）', rebound82)
     check('PP-8-2⑥ token 不落盘：proxy 生命周期内 dataDir 零文件写入（会话仅存内存）', sameDisk82)
-    // C 路径自铸单元（browser-auth.ts 同构；E-PR-2/3/4/6）
+    // C 路径本地生成单元（browser-auth.ts 同构；E-PR-2/3/4/6）
     const auth82 = `127.0.0.1:${up.port}`
     const name82 = AP.dshCookieName(auth82)
     check('PP-8-2-C① cookie 名 = dsh-auth- + base64url(sha256(authority))：确定性、随 authority 变化',
@@ -3312,7 +3312,7 @@ async function main() {
     await r1.probeTick()
     check('PP-8-3⑦ 重取后收敛：token-303 ok → 双计数清零、error 未触发、probeFailures 恒 0（不入崩溃回退）',
       r1.state === 'ready' && r1.probeFailures === 0 && r1.authFailures === 0 && !r1Errored)
-    check('PP-8-3⑧ 分流留痕（rlog 脱敏面）+ managed log 原文未重写（dsh 输出 token 原样留存）',
+    check('PP-8-3⑧ 分流留痕（rlog 脱敏范围）+ managed log 原文未重写（dsh 输出 token 原样留存）',
       rlogSlice(rlogOff83a).includes('probe: 401 (service alive, session invalid)') &&
       rlogSlice(rlogOff83a).includes('session re-establishment') &&
       rlogSlice(rlogOff83a).includes('token=<REDACTED>') &&
@@ -3356,7 +3356,7 @@ async function main() {
     let r3Errored = false
     r3.on('error', () => { r3Errored = true })
     await r3.probeTick()
-    check('PP-8-3⑫ #3 行 unknown：裸 probe 401 → 分流（无 banner 可读）→ C 路径自铸会话 + proxy 升级',
+    check('PP-8-3⑫ #3 行 unknown：裸 probe 401 → 分流（无 banner 可读）→ C 路径本地生成会话 + proxy 升级',
       r3.state === 'ready' && typeof r3.sessionCookie === 'string' && r3.sessionCookie.startsWith(`${name82}=v1.`) &&
       r3.proxy !== null && !String(r3.url).includes('token='))
     await r3.probeTick()
@@ -3365,7 +3365,7 @@ async function main() {
     r3.removeAllListeners('error')
 
     // ---- PP-8-4: 脱敏与不落盘 ------------------------------------------------
-    px('PP-8-4 脱敏面（rlog/panelLog/openBrowser）+ registry D3 字面 + managed log 原文')
+    px('PP-8-4 脱敏范围（rlog/panelLog/openBrowser）+ registry D3 字面 + managed log 原文')
     const rlogOff84 = rlogOffset()
     PATH.appendDecisionLog('openInBrowser: http://127.0.0.1:9/?token=SECRETVALUE42 (externalUrl, token contract)')
     const tail84 = rlogSlice(rlogOff84)
@@ -3374,7 +3374,7 @@ async function main() {
     PATH.appendDecisionLog('idempotent check: url?token=<REDACTED> already-redacted')
     check('PP-8-4② 脱敏幂等：已脱敏形态二次过写不变形（< 在捕获字符集外）',
       rlogSlice(rlogOff84).split('token=<REDACTED>').length - 1 >= 2)
-    check('PP-8-4③ 脱敏面枚举（panelLog + openBrowser 消息载荷留痕面）：两处调用点均过 redactSecrets（静态扫描）',
+    check('PP-8-4③ 脱敏范围枚举（panelLog + openBrowser 消息载荷记录范围）：两处调用点均过 redactSecrets（静态扫描）',
       ['src/webview.ts', 'src/extension.ts'].every((p) =>
         fs.readFileSync(path.join(process.cwd(), p), 'utf8').includes('redactSecrets(')))
     const r4reg = newRuntime(process.pid, { port: up.port })
@@ -3492,7 +3492,7 @@ async function main() {
       const iS = md.calls.indexOf('writeChannelSelected:true')
       check('PU-9②a 首启门触发：channelSelected=false → QuickPick → selected:true / cancelled:false / channel=alpha',
         res.selected === true && res.cancelled === false && res.writeFailed === false && res.channel === 'alpha' && md.calls.includes('pick'))
-      check('PU-9②b 先选后启顺序（mock 调用序可观察）：writeChannel 先于 writeChannelSelected，pick 先于二者，均先于返回',
+      check('PU-9②b 先选择通道、后启动dsh顺序（mock 调用序可观察）：writeChannel 先于 writeChannelSelected，pick 先于二者，均先于返回',
         iW !== -1 && iS !== -1 && iW < iS && md.calls.indexOf('pick') < iW)
       check('PU-9②c preview 归一留痕：log 含 ADR-29 归一行（双重防护单点文案）',
         md.calls.some((c) => c.startsWith('log:') && c.includes("channel 'preview' is not a published dist-tag")))
@@ -3543,7 +3543,7 @@ async function main() {
     // docs/0.1.15修复设计-真机验收问题.md v1.5。手法：
     //  - runtime 行为断言 = start() step1 全链（registry adopt）真实驱动 + 实例
     //    方法 spy marks（覆写后委托原实现；JS 层 private 可覆写）；
-    //  - 活体验证 401 形态 = 独立 in-process 拒绝上游（fence 过后一律 401 =
+    //  - 真实实例验证 401 形态 = 独立 in-process 拒绝上游（fence 过后一律 401 =
     //    「凭证与进程 secret 不同源」失效态，设计 §九-1）；
     //  - vscode 层行为断言 = Module._load 'vscode' mock 驱动编译产物
     //    (webview.js/webviewDetails.js/extension.js)，fake view/commands/config
@@ -3595,7 +3595,7 @@ async function main() {
       check('PP-10-2① adopt(unauthorized) 调用序：probe → mint → live 验证 GET → establishProxy → setState(ready)（ready 晚于代理就绪）',
         iStart10 > -1 && iProbe10 > iStart10 && iMint10 > iProbe10 && iLive10 > iMint10 && iLiveProbe10 > iLive10 &&
         iEst10 > iLiveProbe10 && iEstOk10 > iEst10 && iReady10 > iEstOk10)
-      check('PP-10-2② 恰好性：ready/mint/liveVerify/establishProxy 各恰一次、成功路径零 setState(error)（单次活体验证、无重复面）',
+      check('PP-10-2② 恰好性：ready/mint/liveVerify/establishProxy 各恰一次、成功路径零 setState(error)（单次真实实例验证、无重复面）',
         marks.filter((m) => m === 'setState:ready').length === 1 && marks.filter((m) => m === 'mint').length === 1 &&
         marks.filter((m) => m === 'liveVerify').length === 1 && marks.filter((m) => m === 'establishProxy').length === 1 &&
         !marks.includes('setState:error'))
@@ -3611,7 +3611,7 @@ async function main() {
     }
 
     // ---- PP-10-3: C 不可用诚实降级（#82）-------------------------------------
-    px('PP-10-3 C 不可用诚实降级（#82：凭证不可读 / 活体验证 401 → 无代理、url 保持 null、引导态置位）')
+    px('PP-10-3 C 不可用诚实降级（#82：凭证不可读 / 真实实例验证 401 → 无代理、url 保持 null、引导态置位）')
     {
       // 形态 a：凭证不可读（dshHome 指向缺失目录 → readCredentialsSecret null）
       seedExternal15(up.port)
@@ -3637,7 +3637,7 @@ async function main() {
         rlogSlice(offA).includes('adopt C path: credentials unreadable'))
       rA.dispose()
 
-      // 形态 b：活体验证 401（独立拒绝上游；mockHome 凭证有效 → mint 成功但上游拒绝）
+      // 形态 b：真实实例验证 401（独立拒绝上游；mockHome 凭证有效 → mint 成功但上游拒绝）
       const rejServer = httpMod.createServer((rq, rs) => {
         rs.writeHead(401, { 'content-type': 'text/plain' })
         rs.end('unauthorized')
@@ -3658,7 +3658,7 @@ async function main() {
       rB.establishProxy = async (s) => { marksB.push('establishProxy'); return origEstB(s) }
       const offB = rlogOffset()
       await rB.start()
-      check('PP-10-3④ 活体验证 401（mint 成功但 live GET 拒绝）：establishProxy 不被调用、url 保持 null、无代理',
+      check('PP-10-3④ 真实实例验证 401（mint 成功但 live GET 拒绝）：establishProxy 不被调用、url 保持 null、无代理',
         marksB.includes('mint') && marksB.includes('liveVerify') && !marksB.includes('establishProxy') &&
         rB.url === null && rB.proxy === null && rB.sessionCookie === null)
       check('PP-10-3⑤ 引导态置位 + rlog rejected 留痕（不假装可配；判定表 #6 行 401 侧）',
@@ -3670,7 +3670,7 @@ async function main() {
       rB.dispose()
     }
 
-    // ---- PP-10-4/5/6 + PP-11 行为面 + PU-10-3③④: vscode 层（mock 驱动产物）--
+    // ---- PP-10-4/5/6 + PP-11 行为层面 + PU-10-3③④: vscode 层（mock 驱动产物）--
     px('PP-10-4/5/6 + PP-11 + PU-10-3 vscode 层行为断言（Module._load vscode mock 驱动编译产物；mock postMessage → 真实路由/guard/命令映射）')
     {
       const Module = require('node:module')
@@ -3772,7 +3772,7 @@ async function main() {
         const iSel10 = timeline.indexOf('update:channelSelected=true')
         const iSC10 = timeline.indexOf('setChannel:alpha')
         const iStart10b = timeline.indexOf('start')
-        check('PP-10-4① 选择调用序：writeChannel → writeChannelSelected=true → runtime.setChannel → start（先选后启：start 严格晚于写入）',
+        check('PP-10-4① 选择调用序：writeChannel → writeChannelSelected=true → runtime.setChannel → start（先选择通道、后启动dsh：start 严格晚于写入）',
           iWC10 > -1 && iSel10 > -1 && iSC10 > -1 && iStart10b > -1 && iWC10 < iSel10 && iSel10 < iSC10 && iSC10 < iStart10b)
         check('PP-10-4② 写入值：channel=alpha + channelSelected=true（切换器写入后首启页从结构上不再触发）',
           cfgStore.channel === 'alpha' && cfgStore.channelSelected === true)
@@ -3821,7 +3821,7 @@ async function main() {
         const exitListenersBefore = process.listeners('exit').length
         const EX = require('../out/extension.js') // { activate, deactivate }
         await EX.activate({ subscriptions: [] })
-        check('PP-10-6① activate 注册 dsh.openInBrowser + dsh.chooseChannel（#87/#86 命令面可达）',
+        check('PP-10-6① activate 注册 dsh.openInBrowser + dsh.chooseChannel（#87/#86 命令入口可达）',
           typeof cmdHandlers['dsh.openInBrowser'] === 'function' && typeof cmdHandlers['dsh.chooseChannel'] === 'function')
         const rtEx = providers['dsh.panel'].runtime
         // 场景 A：externalUrl=null + token 契约（adopt 无 banner）→ 不打开 401 裸页
@@ -3947,8 +3947,8 @@ async function main() {
       const pickHtml11 = buildPanelHtml(null, CSP11, 'awaitingChannel')
       check('PU-10-1① awaitingChannel 选择卡：三通道卡片 data-channel（latest/next/alpha；channelSelect 单点文案）',
         ['data-channel="latest"', 'data-channel="next"', 'data-channel="alpha"'].every((a) => pickHtml11.includes(a)))
-      check('PU-10-1② 风险提示（alpha 首次冷拉取）+ 稍后再说次操作（#83 设计 §5.3 落点）',
-        pickHtml11.includes('首次冷拉取可能需数分钟') && pickHtml11.includes('id="pick-later"') && pickHtml11.includes('稍后再说'))
+      check('PU-10-1② 风险提示（alpha 首次冷缓存下载）+ 稍后再说次操作（#83 设计 §5.3 落点）',
+        pickHtml11.includes('首次冷缓存下载可能需数分钟') && pickHtml11.includes('id="pick-later"') && pickHtml11.includes('稍后再说'))
       check('PU-10-1③ 选择卡首帧可见（channel-pick 无 hide）+ overlay 隐藏（#90③ 反向：中立页不再遮蔽诊断）',
         pickHtml11.includes('<div id="channel-pick">') && pickHtml11.includes('<div id="overlay" class="hide">'))
       // PU-10-2: 切换器静态
@@ -3964,7 +3964,7 @@ async function main() {
       check('PU-10-2③ 通道一致 → 零待重启高亮面（判定 = config 通道 ≠ 运行中快照通道）',
         !cardSync11.includes('立即重启以生效'))
       // PU-12-1（取代 PU-10-3①②，#99 sanctioned 改写）: package.json（无条件断言）
-      // —— ADR-38 拆容器后的双容器声明面断言（0.1.16 #93）。
+      // —— ADR-38 拆容器后的双容器声明范围断言（0.1.16 #93）。
       const pkg11 = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8'))
       const conts12 = pkg11.contributes.viewsContainers.secondarySidebar
       check('PU-12-1① manifest 双容器：secondarySidebar 恰 2 项（id/title/icon 三元逐项断言；ADR-38）',
@@ -4016,7 +4016,7 @@ async function main() {
         })())
       check('PU-11-1② 面板 CSP script-src 含 cspSource 插值（#90①；runtime 属性、非猜测 scheme）',
         known11.includes(`script-src 'unsafe-inline' ${CSP11};`))
-      check('PU-11-1③ 单参兼容：空 cspSource 保持旧形（既有 sim/烤路径零破坏，#90 增参可选）',
+      check('PU-11-1③ 单参兼容：空 cspSource 保持旧形（既有 sim/直接写入路径零破坏，#90 增参可选）',
         legacy11.includes("script-src 'unsafe-inline';") && !legacy11.includes("script-src 'unsafe-inline' http"))
       const bridgeSeg11 = script11.slice(script11.indexOf('function bridgeDown'), script11.indexOf('function post'))
       check('PU-11-1④ 死亡分支诊断可见：classList.remove(hide) + #state 双写（#90③；不再写进隐藏层静默）',
@@ -4073,7 +4073,7 @@ async function main() {
       PM11.routePanelMessage({ type: 'openBrowser' }, sinks11)
       PM11.routePanelMessage({ type: 'restart' }, sinks11)
       PM11.routePanelMessage({ type: 'stop' }, sinks11)
-      check('PP-11-1① 面板 4 型路由 → sinks 各命中一次（路由映射单点；映射命令面见 PP-11-1②）',
+      check('PP-11-1① 面板 4 型路由 → sinks 各命中一次（路由映射单点；映射命令入口见 PP-11-1②）',
         JSON.stringify(hits11) === JSON.stringify(['showDetails', 'openBrowser', 'restart', 'stop']))
       hits11.length = 0
       PM11.routePanelMessage({ type: 'webviewReady' }, sinks11)
@@ -4205,7 +4205,7 @@ async function main() {
 
     // ==================== 0.1.17 additions (#1, design §九 #1/#4) ==============
     // PP-13 WINDOWSAFE 三段门控阈值判定（判据来源：docs/0.1.17调研报告-dsh-0.1.3-
-    // alpha集成面复验与免常驻窗.md §九 #4；ADR-46 版本区间语义）。手法：
+    // alpha集成点复验与无常驻窗口.md §九 #4；ADR-46 版本区间语义）。手法：
     //  - PP-13-1 纯函数直测（PP-8-6① 先例同型：judgeWindowSafeByVersion +
     //    compareDshVersions 预发布感知比较器）；期望阈值一律取导出常量引用，
     //    版本字面仅作测试输入与 check 名称（唯一事实源，不重复硬编码）；
@@ -4213,11 +4213,11 @@ async function main() {
     //    三段判定 rlog 仅由 consoleVisible=false 守卫块触达；unknown 静默跳过）。
     px('PP-13 WINDOWSAFE 三段门控阈值（#1：judgeWindowSafeByVersion 区间判定纯函数直测 + 编译产物静态交叉一致性）')
     // ---- PP-13-1: 版本区间判定（ADR-46 三段区间） ------------------------------
-    check('PP-13-1① 阈值常量单点：WINDOWSAFE_MIN_VERSION = 0.1.3-alpha.1 + WINDOWSAFE_REGRESSION_MIN_VERSION = 0.1.3-alpha.2（三源判定锚；TOKEN_AUTH_MIN_VERSION 同址同模式）',
+    check('PP-13-1① 阈值常量单点：WINDOWSAFE_MIN_VERSION = 0.1.3-alpha.1 + WINDOWSAFE_REGRESSION_MIN_VERSION = 0.1.3-alpha.2（三方独立证据支撑的判定锚；TOKEN_AUTH_MIN_VERSION 同址同模式）',
       DP.WINDOWSAFE_MIN_VERSION === '0.1.3-alpha.1' && DP.WINDOWSAFE_REGRESSION_MIN_VERSION === '0.1.3-alpha.2')
-    check('PP-13-1② 低于下界 → flashing：0.1.2-alpha.5 / 0.1.2-rc.1（0.1.2 < 0.1.3，隐藏形态上游闪窗取舍）',
+    check('PP-13-1② 低于下界 → flashing：0.1.2-alpha.5 / 0.1.2-rc.1（0.1.2 < 0.1.3，隐藏形态存在上游闪现窗口的取舍）',
       DP.judgeWindowSafeByVersion('0.1.2-alpha.5') === 'flashing' && DP.judgeWindowSafeByVersion('0.1.2-rc.1') === 'flashing')
-    check('PP-13-1③ 下界闭（等于下界 → zeroFlash 承诺区）：WINDOWSAFE_MIN_VERSION 输入（0.1.3-alpha.1；该版本未发布 npm）',
+    check('PP-13-1③ 下界闭（等于下界 → zeroFlash 承诺版本区间）：WINDOWSAFE_MIN_VERSION 输入（0.1.3-alpha.1；该版本未发布 npm）',
       DP.judgeWindowSafeByVersion(DP.WINDOWSAFE_MIN_VERSION) === 'zeroFlash')
     check('PP-13-1④ semver 预发布序：WINDOWSAFE_MIN_VERSION < WINDOWSAFE_REGRESSION_MIN_VERSION（compareDshVersions < 0；alpha.1 < alpha.2）',
       DP.compareDshVersions(DP.WINDOWSAFE_MIN_VERSION, DP.WINDOWSAFE_REGRESSION_MIN_VERSION) < 0)
@@ -4236,8 +4236,8 @@ async function main() {
       const call17 = 'const windowSafe = judgeWindowSafeByVersion(built.resolved?.version ?? null)'
       // 三段 rlog 期望文案 = 常量拼接（唯一事实源：文案版本字样与导出常量钉死）
       const logs17 = [
-        `[dshProcess] 运行时 < ${DP.WINDOWSAFE_MIN_VERSION}，隐藏形态存在上游闪窗取舍`,
-        `隐藏形态零闪窗（零闪窗承诺区 [${DP.WINDOWSAFE_MIN_VERSION}, ${DP.WINDOWSAFE_REGRESSION_MIN_VERSION})，上游 PR #3516）`,
+        `[dshProcess] 运行时 < ${DP.WINDOWSAFE_MIN_VERSION}，隐藏形态存在上游闪现窗口的取舍`,
+        `隐藏形态零闪窗（零闪窗承诺版本区间 [${DP.WINDOWSAFE_MIN_VERSION}, ${DP.WINDOWSAFE_REGRESSION_MIN_VERSION})，上游 PR #3516）`,
         `WARN: dsh ≥ ${DP.WINDOWSAFE_REGRESSION_MIN_VERSION} native runner 在隐藏形态存在上游弹窗回归`,
       ]
       const guardIdx17 = dpSrc17.indexOf(guard17)

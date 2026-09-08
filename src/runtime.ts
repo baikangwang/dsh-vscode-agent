@@ -314,7 +314,7 @@ export class DshRuntime extends EventEmitter {
   /**
    * 0.1.15 #83 (ADR-31): park this runtime in the awaitingChannel state — the
    * panel renders the channel-pick card and start() runs ONLY after the pick
-   * writes `dsh.channel` + `dsh.channelSelected` (先选后启: start strictly
+   * writes `dsh.channel` + `dsh.channelSelected` (先选择通道、后启动dsh: start strictly
    * AFTER the writes; the runtime instance is constructed beforehand — the
    * QuickPick-before-construction ordering premise was disproven).
    */
@@ -547,7 +547,7 @@ export class DshRuntime extends EventEmitter {
           if (this.startLaunchFailures >= START_LAUNCH_FAIL_LIMIT) {
             // ADR-23 #39: the fallback is a SAFETY NET, not the design goal —
             // rlog must state the degradation explicitly (§4.8.2/§4.8.5).
-            rlog('start-launch repeatedly failed; falling back to direct spawn (0.1.8 behavior) — direct = 无常驻窗降级态 (violates the ADR-20 resident-console ruling; NOT an acceptance shape)')
+            rlog('start-launch repeatedly failed; falling back to direct spawn (0.1.8 behavior) — direct = 无常驻窗口降级态 (violates the ADR-20 resident-console ruling; NOT an acceptance shape)')
           }
         } else {
           rlog(`launchManaged: attempt #${this.launchAttempts} failed: ${msg}`)

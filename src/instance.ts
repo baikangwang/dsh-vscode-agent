@@ -13,7 +13,7 @@ export interface DshRecord {
   port: number
   /**
    * Ownership used by last-window stop arbitration (ADR-4, P0-F):
-   * - 'managed-own' = this extension代拉的一个 detached 独立常驻 dsh（仅最后窗口+防误杀才停）
+   * - 'managed-own' = this extension代为启动的一个 detached 独立常驻 dsh（仅最后窗口+防误杀才停）
    * - 'extension'   = legacy/other extension-managed dsh（同样仅最后窗口才停）
    * - 'external'    = 手动 cmd 或其它工具起的 dsh（最后窗口不杀，保留 known-external 记录）
    */

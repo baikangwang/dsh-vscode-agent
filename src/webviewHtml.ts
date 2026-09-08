@@ -550,7 +550,7 @@ function copyBtn(text: string, label: string): string {
 
 function managedByText(m: DshLaunchInfo['managedBy']): string {
   if (m === 'external') return 'external（外部启动）'
-  if (m === 'managed-own') return 'managed-own（扩展代拉）'
+  if (m === 'managed-own') return 'managed-own（扩展代为启动）'
   if (m === 'extension') return 'extension'
   return '—'
 }

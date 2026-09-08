@@ -12,7 +12,7 @@
 //
 // First-launch flow (ADR-29-③④⑤): `dsh.channelSelected === false` → present a
 // native QuickPick (via the injected `pick` dep) BEFORE any runtime
-// construction — 「先选后启」 hard ordering. Picking writes
+// construction — 「先选择通道、后启动dsh」 hard ordering. Picking writes
 // `dsh.channel` + `dsh.channelSelected=true` BEFORE this function resolves
 // (the write happens first; the caller then builds the runtime — PU-9-2
 // asserts the call order headlessly). Esc/cancel keeps the current value and
@@ -61,7 +61,7 @@ export function channelPickItems(): ChannelPickItem[] {
     { label: 'next', detail: '预发布前瞻——当前与 latest 相同，上游发布新 rc 时先于 latest' },
     {
       label: 'alpha',
-      detail: '最新实验通道——含 browser-auth 新特性，启动后带访问 token、面板经本地代理接入；首次冷拉取可能需数分钟',
+      detail: '最新实验通道——含 browser-auth 新特性，启动后带访问 token、面板经本地代理接入；首次冷缓存下载可能需数分钟',
     },
   ]
 }
@@ -103,7 +103,7 @@ export interface ChannelSelectResult {
  *     `forcePick` opt bypasses the gate for the `dsh.chooseChannel` re-entry);
  *  2. normalize the current raw value (legacy `preview` → `latest`) and rlog;
  *  3. present the three items; on a valid pick write channel + selected flag
- *     IN ORDER, awaited, BEFORE resolving (「先选后启」 ordering is observable
+ *     IN ORDER, awaited, BEFORE resolving (「先选择通道、后启动dsh」 ordering is observable
  *     via mock deps call order, PU-9-2);
  *  4. Esc → keep the current value, do NOT set the flag, `cancelled: true`;
  *  5. write failure → keep the previous value, `writeFailed: true`, rlog,
@@ -133,6 +133,6 @@ export async function runFirstLaunchChannelSelect(
     deps.log(`channel select: config write failed (${(err as Error).message}); keeping '${norm.channel}' and continuing startup (honest degradation)`)
     return { channel: norm.channel, selected: false, cancelled: false, writeFailed: true }
   }
-  deps.log(`channel select: user picked '${picked}'; channel + channelSelected written before runtime start (先选后启)`)
+  deps.log(`channel select: user picked '${picked}'; channel + channelSelected written before runtime start (先选择通道、后启动dsh)`)
   return { channel: picked, selected: true, cancelled: false, writeFailed: false }
 }

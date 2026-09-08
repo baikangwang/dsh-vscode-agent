@@ -4,7 +4,7 @@
 // statusLine()), the item command points at dsh.showDetails, and the
 // dsh.details WebviewViewProvider is registered (visibility: collapsed).
 // 0.1.14 ADR-29: first-launch channel selection runs BEFORE the DshRuntime
-// construction (「先选后启」), the vscode surface shrinks to the deps lambdas
+// construction (「先选择通道、后启动dsh」), the vscode surface shrinks to the deps lambdas
 // consumed by the pure channelSelect module; `dsh.chooseChannel` re-enters the
 // same flow any time (restart-to-apply hint, never auto-restarts). ADR-30:
 // openInBrowser sends runtime.externalUrl (token contract) and logs the URL
@@ -12,7 +12,7 @@
 // 0.1.15 #83/#86 (ADR-31, user ruling): the QuickPick FIRST-LAUNCH form is
 // REMOVED — the runtime is constructed first, parks in awaitingChannel when
 // dsh.channelSelected=false, and the PANEL pick card drives the selection
-// (chooseChannel uplink → config writes → start; 先选后启 kept). The
+// (chooseChannel uplink → config writes → start; 先选择通道、后启动dsh kept). The
 // `dsh.chooseChannel` command STAYS as the auxiliary QuickPick entry
 // (forcePick; the pick dep is now carried by this command flow).
 // 0.1.15 #87: openInBrowser refuses to open the bare URL for a token-contract
@@ -191,7 +191,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand('dsh.openInBrowser', async () => {
       // ADR-30-4 (§3.6): token contract sends the banner-authenticated URL
       // (免登录直达，与用户 alpha 手跑样本同路径); legacy/degraded = the bare
-      // url (原样). The log line is secret-redacted (NOTE-5 留痕面).
+      // url (原样). The log line is secret-redacted (NOTE-5 记录范围).
       // 0.1.15 #87: a token-contract session WITHOUT a banner (adopt → C path)
       // has externalUrl=null — the bare URL would 401 in the browser. Honest
       // guidance instead: the panel already holds the session; opening the

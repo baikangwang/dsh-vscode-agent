@@ -12,7 +12,7 @@
 // zero change). Unknown types are a logged no-op (PP-11-3).
 // 0.1.15 #83: the chooseChannel uplink writes dsh.channel + dsh.channelSelected
 // (in that order, channelSelect normalization) and THEN starts the runtime
-// (先选后启: start strictly after the writes; PP-10-4).
+// (先选择通道、后启动dsh: start strictly after the writes; PP-10-4).
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as vscode from 'vscode'
@@ -209,7 +209,7 @@ export class DshPanel implements vscode.WebviewViewProvider {
   /**
    * 0.1.15 #83: the awaitingChannel pick-card uplink. Write order is FIXED
    * (PP-10-4): dsh.channel → dsh.channelSelected=true → setChannel on the
-   * runtime → start() (先选后启: start strictly AFTER the writes). `null` =
+   * runtime → start() (先选择通道、后启动dsh: start strictly AFTER the writes). `null` =
    * the 「稍后再说」 sentinel: start with the CURRENT channel, flag NOT set
    * (asked again next launch). A config-write failure keeps the current value
    * and still starts (channelSelect honest-degradation precedent, §2.3-④).
@@ -234,7 +234,7 @@ export class DshPanel implements vscode.WebviewViewProvider {
       return
     }
     this.runtime.setChannel(norm.channel)
-    panelLog(`chooseChannel: wrote channel='${norm.channel}' + channelSelected=true; starting the runtime (先选后启: start AFTER the writes)`)
+    panelLog(`chooseChannel: wrote channel='${norm.channel}' + channelSelected=true; starting the runtime (先选择通道、后启动dsh: start AFTER the writes)`)
     void this.runtime.start()
   }
 

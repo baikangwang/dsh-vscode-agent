@@ -43,7 +43,7 @@ dsh 发布 alpha 后，`dsh web` 启动要求 token：浏览器打开 `dsh web` 
 ### 2.1 做什么
 - 新增扩展宿主内嵌鉴权反向代理（新模块 `src/authProxy.ts`，纯 Node）。
 - 启动/接管/探活/就绪探测的双契约化（旧=裸探；新=带凭据探）。
-- dsh 启动横幅 token 解析、`.credentials.yaml` 会话 Cookie 自铸、`openInBrowser` 打开带 token URL。
+- dsh 启动横幅 token 解析、`.credentials.yaml` 会话 Cookie 本地生成、`openInBrowser` 打开带 token URL。
 - `dsh.channel` 增加 `alpha` 枚举；测试桩与联调剧本同步新契约。
 
 ### 2.2 不做什么
@@ -76,7 +76,7 @@ dsh 发布 alpha 后，`dsh web` 启动要求 token：浏览器打开 `dsh web` 
 | A2 | 面板 iframe URL | `src/runtime.ts:282-289` `adopt()` 生成裸 URL；`src/webviewHtml.ts:13` iframe `src=runtime.url` | `browser-auth.ts:246-265`：token URL 303→干净 `/` + Set-Cookie(SameSite=Strict)；跨站 iframe 不携带 → SPA `/api` 全 401 | **阻断** | 扩展宿主内嵌鉴权代理（§3.3），iframe 面向代理 URL |
 | A3 | 端口/凭证横幅解析 | `src/dshProcess.ts:47,72-80` `URL_RE` 仅取端口 | `web-app.spec.ts:146`：横幅为 `dsh web: http://127.0.0.1:<port>/?token=<43位base64url> (LAN: …)` | 降级 | 新增 token 捕获正则；端口正则保持兼容（前缀未变） |
 | A4 | 固定端口就绪路径 | `src/dshProcess.ts:96-98,143-149` `fixedPortPath` 不读日志、直接裸探 | alpha 下裸探恒 401 → 永不就绪；token 仅在日志横幅 | 降级 | alpha 契约下固定端口路径同样 tail 日志（token + 就绪双信号），再带凭据确认 |
-| A5 | 接管外部实例的鉴权 | `src/instance.ts:428-431` 特征校验成立；但外部实例 token 无从获取 | `browser-auth.ts:52-58`：launch token 仅存进程内 WeakMap，不落盘；签名 secret 持久化于 DSH_HOME | 降级 | 读 `<dshHome>/.credentials.yaml` 记录 `client-connection/browser-session` 自铸会话 Cookie（§3.4） |
+| A5 | 接管外部实例的鉴权 | `src/instance.ts:428-431` 特征校验成立；但外部实例 token 无从获取 | `browser-auth.ts:52-58`：launch token 仅存进程内 WeakMap，不落盘；签名 secret 持久化于 DSH_HOME | 降级 | 读 `<dshHome>/.credentials.yaml` 记录 `client-connection/browser-session` 本地生成会话 Cookie（§3.4） |
 | A6 | 版本通道 | `package.json:74-82` `dsh.channel` 仅 `latest/preview` | `scripts/release/families.ts`（commit 45455aae77）：alpha 版发布于 npm dist-tag **`alpha`**（rc→next、稳定→latest） | 降级 | `dsh.channel` 枚举增加 `alpha`；默认保持 `latest`（旧契约，零回归） |
 | A7 | openInBrowser | `src/extension.ts:104-108` 打开 `runtime.url`（裸） | 浏览器顶层导航带 token 才能换取 Cookie（`web-auth.e2e.ts:173-181`） | 降级 | 打开带 token 的 URL（managed：横幅 token；外部：裸 URL + 401 页自带指引文案） |
 | A8 | WebSocket 透传 | 现架构浏览器同源直连，无代理 | `packages/api/gateway/src/index.ts:212-228`：`/api/remote.mux` upgrade 走 `requestRejection`（Cookie 鉴权） | 降级 | 代理转发 upgrade：向上游发起带 Cookie 的 upgrade，成功后双向 pipe（§3.3） |
@@ -107,7 +107,7 @@ flowchart LR
     RT --> DP & AP & INS & DR & PT
     DP -- "spawn: node lib/bin.js web --host 127.0.0.1 --port N --no-open" --> SRV
     DP -- "tail logs/dsh-*.log（端口+token）" --> AP
-    AP -- "GET /?token=…（交换）或 自铸 Cookie" --> AUTH
+    AP -- "GET /?token=…（交换）或 本地生成 Cookie" --> AUTH
     AP -- "转发：Host/Origin 重写 + Cookie 注入（HTTP/SSE/WS）" --> SRV
     AUTH --- CRED
     AP -. "只读 <dshHome>/.credentials.yaml" .-> CRED
@@ -129,11 +129,11 @@ flowchart LR
    - 上游 `Set-Cookie` 一律剥离（浏览器侧无需也不应持有 dsh Cookie）；
    - body 以 stream pipe 透传，不缓冲、不改写（gzip 协商由上游完成，代理不动 `accept-encoding`）。
 3. **WS 隧道**：`server.on('upgrade')` → 对上游发起同路径 upgrade（注入 Cookie、重写 Host）→ `101` 后双向 `pipe` 原始 socket；上游拒绝则 `destroy`。
-4. **401 自愈**：转发/升级遇上游 401 → 重取凭据（重交换/重铸）一次并重放；仍 401 → 透传 401 并向 runtime 上报（面板显示可操作错误态）。
+4. **401 自愈**：转发/升级遇上游 401 → 重取凭据（重交换/重新生成）一次并重放；仍 401 → 透传 401 并向 runtime 上报（面板显示可操作错误态）。
 
 **凭据获取 `obtainSession(dshPort): Promise<Session|null>`（双路径，顺序固定）**：
 1. **路径 T（token 交换，公开契约优先）**：token 来源 = 本窗口启动日志 `logs/dsh-*.log`（新→旧扫描，取与 `dshPort` 匹配的横幅 `dsh web: http://127.0.0.1:<port>/?token=<token>`）；执行 `GET http://127.0.0.1:<dshPort>/?token=<token>`（Host=上游 authority）→ 期望 `303 + Set-Cookie`，捕获 `dsh-auth-*` Cookie 值。
-2. **路径 C（凭据库自铸，通用兜底；接管外部实例的主路径）**：解析 `<dshHome>/.credentials.yaml`（`dshHome` 来源 = `dsh.dshHome` 配置，与 spawn 时注入的 `DSH_HOME` 同源，单一事实）→ `records['client-connection/browser-session'].payload`（`kind: grant`，`version: 1`，`secret: <32B base64url>`）→ 按 v1 格式自铸：`cookieName = 'dsh-auth-' + base64url(sha256('127.0.0.1:<dshPort>'))`；`payload = {version:1, authority:'127.0.0.1:<dshPort>', issuedAt, expiresAt: issuedAt+30d}`；`cookie = 'v1.' + b64url(payloadJSON) + '.' + b64url(HMAC-SHA256(secret, b64url(payloadJSON)))`（格式与 `browser-auth.ts:106-159` 逐字段对齐，仅支持 `version: 1`，其余格式判为不支持→走路径 3）。
+2. **路径 C（凭据库本地生成，通用兜底；接管外部实例的主路径）**：解析 `<dshHome>/.credentials.yaml`（`dshHome` 来源 = `dsh.dshHome` 配置，与 spawn 时注入的 `DSH_HOME` 同源，单一事实）→ `records['client-connection/browser-session'].payload`（`kind: grant`，`version: 1`，`secret: <32B base64url>`）→ 按 v1 格式本地生成：`cookieName = 'dsh-auth-' + base64url(sha256('127.0.0.1:<dshPort>'))`；`payload = {version:1, authority:'127.0.0.1:<dshPort>', issuedAt, expiresAt: issuedAt+30d}`；`cookie = 'v1.' + b64url(payloadJSON) + '.' + b64url(HMAC-SHA256(secret, b64url(payloadJSON)))`（格式与 `browser-auth.ts:106-159` 逐字段对齐，仅支持 `version: 1`，其余格式判为不支持→走路径 3）。
 3. **失败**：返回 null → runtime 置 `error` 态，错误文案含可操作指引（确认 `dsh.dshHome`、或 `dsh.restart` 受控重拉）。
 
 **安全约束**：token 与 Cookie 仅存内存，不落盘、不打日志（日志中 token 一律 redact 为 `<redacted>`）；`.credentials.yaml` 只读打开，绝不写回。
@@ -146,7 +146,7 @@ flowchart LR
 - 版本号（`dshResolver` 已有 `bin.version`）仅用于日志诊断与文案，不参与分支。
 - **channel 隔离**：alpha 走 npm dist-tag `alpha`（`npx @deepseek-ai/dsh@alpha web`），稳定线走 `latest`；npx 缓存内两版本天然共存于不同 hash 目录，`dshResolver` 按 spec+version 匹配，无需改动（`dshResolver.ts:388` spec 参数化已支持任意 channel）。
 - **接管场景**：注册表记录不区分契约（`instance.json` schema 不变，决策 D3）；每窗口启动/重连时自行契约探测 + obtainSession，凭据库为共享事实源，多窗口天然一致。
-- **dsh 重启**（崩溃重拉 / forceRelaunch）：新进程新 token，但凭据库 secret 不变 → 路径 C 永远有效；代理在 401 自愈中重铸即可，无需感知重启。
+- **dsh 重启**（崩溃重拉 / forceRelaunch）：新进程新 token，但凭据库 secret 不变 → 路径 C 永远有效；代理在 401 自愈中重新生成即可，无需感知重启。
 
 ### 3.5 生命周期与状态机（在 v4 语义上的增量）
 
@@ -247,7 +247,7 @@ export function parseBrowserSessionRecord(yamlText: string): { secret: string; v
 | P2 旧版是否无鉴权 | grep 运行中缓存 `…\_npx\b86ed90107c62dab\…@deepseek-ai\dsh` | 0.1.1-rc.2 产物中无 `browser-session/authenticatedUrl/dsh-auth-` 任何命中 | 旧契约实证成立，双契约真实存在 |
 | P3 横幅格式 | 读 `web-app/src/index.ts:280` + `tests/web-app.spec.ts:146` | `dsh web: http://127.0.0.1:4567/?token=test-token (LAN: …)` | 端口前缀兼容；token 可捕获 |
 | P4 token 形态与生命周期 | `browser-auth.ts:14-20,52-58,223-230` | 32B→43 字符 base64url；进程 WeakMap（每启动随机）；不落盘 | 每次重启变化；外部实例不可获取 |
-| P5 Cookie 机制 | `browser-auth.ts:106-159,240-302` | `dsh-auth-<sha256(authority)>`=`v1.<payload>.<hmac>`；HttpOnly/SameSite=Strict/非 Secure；30 天；authority 绑定 Host | 自铸可行（v1 格式 + secret 均可复现） |
+| P5 Cookie 机制 | `browser-auth.ts:106-159,240-302` | `dsh-auth-<sha256(authority)>`=`v1.<payload>.<hmac>`；HttpOnly/SameSite=Strict/非 Secure；30 天；authority 绑定 Host | 本地生成可行（v1 格式 + secret 均可复现） |
 | P6 跨重启 Cookie 有效性 | `apps/cli/tests/web-auth.e2e.ts:194-197` | 新 token、旧 Cookie 仍 200 | secret 持久化成立（路径 C 前提） |
 | P7 secret 存储 | `credentials-local/src/index.ts:61,88-94,289-293` | `<DSH_HOME>/.credentials.yaml` records 段，键 `<scope>/<id>`，`{kind:'grant',payload:{version,secret}}`；DSH_HOME=配置>env>~/.dsh（`home-paths/src/index.ts:87-91`） | 路径 C 可实现 |
 | P8 WS/静态资源鉴权面 | `api/gateway/src/index.ts:212-228`、`client/modules/src/index.ts:586`、`frontend-static/src/index.ts:92-95` | `/api/remote.mux` upgrade 需鉴权；`/plugins/*` 与静态资源公开 | 代理需 WS 隧道；资源纯透传 |
@@ -274,8 +274,8 @@ export function parseBrowserSessionRecord(yamlText: string): { secret: string; v
 
 1. **分层不变**：`authProxy.ts` 为纯 Node 模块，与 `instance/dshProcess/paths` 同层；`extension.ts/webview.ts` 仅消费 `runtime.url → panelUrl` 的既有订阅面，vscode 耦合面零扩大。
 2. **单点契约知识**：dsh 鉴权格式（横幅、Cookie v1、凭据记录）收敛在 `authProxy.ts` 纯函数导出面（§3.7），上游演化只改一个文件。
-3. **可测试性**：`fetchToken/nowMs` 注入缝 + 纯函数导出 → 无头可测；sim.mjs mock server 可完整模拟 401/303+Set-Cookie/凭据 fixture。
-4. **去硬编码**：无版本号分支（运行时探测）、无端口/路径字面量（`LOOPBACK_HOST` 单源沿用、代理端口 OS 分配）、cookie 参数（前缀/有效期/版本）按证据常量集中在 `authProxy.ts` 顶部并注明证据行号。
+3. **可测试性**：`fetchToken/nowMs` 注入扩展点 + 纯函数导出 → 无头可测；sim.mjs mock server 可完整模拟 401/303+Set-Cookie/凭据 fixture。
+4. **去硬编码**：无版本号分支（运行时探测）、无端口/路径字面量（`LOOPBACK_HOST` 单一事实来源沿用、代理端口 OS 分配）、cookie 参数（前缀/有效期/版本）按证据常量集中在 `authProxy.ts` 顶部并注明证据行号。
 5. **文档同步**：本方案修订 `docs/调研报告.md` 的「同源直连 iframe」约定为「面板 → authProxy → dsh」；`docs/联调测试剧本.md` 增补 alpha 通道用例（§9）。
 
 ---
@@ -307,7 +307,7 @@ export function parseBrowserSessionRecord(yamlText: string): { secret: string; v
 | # | 决策 | 理由 | 否决项 |
 |---|---|---|---|
 | D1 | 采用方案 A：扩展宿主内嵌鉴权反向代理 | 跨站 iframe 不能携带 SameSite=Strict Cookie；token 又被服务端 303 剥离（§1.2），只有「带凭据端=iframe 同源服务端」可同时满足页面/`/api`/WS/SSE | 方案 B「token 拼 iframe URL」：服务端剥 token + 后续请求靠 Cookie，跨站 iframe 结构性失效；方案 D「patch 禁用鉴权 / fork」：违反红线且前端依赖鉴权行为 |
-| D2 | 凭据获取顺序：T（日志 token 交换）→ C（凭据库自铸）→ 错误态 | T 走公开打印 URL 契约（最稳）；C 覆盖接管外部实例与日志缺失场景；两者失败给出可操作错误而非静默 | 「用户手填 token」不入 v1（指引即可） |
+| D2 | 凭据获取顺序：T（日志 token 交换）→ C（凭据库本地生成）→ 错误态 | T 走公开打印 URL 契约（最稳）；C 覆盖接管外部实例与日志缺失场景；两者失败给出可操作错误而非静默 | 「用户手填 token」不入 v1（指引即可） |
 | D3 | 注册表 schema 不变；契约状态每窗口自探测推导 | 避免 `instance.json` 跨版本兼容问题；凭据库是共享事实源，多窗口天然一致 | 在 DshRecord 中持久化 authMode/token（token 每启动即变，持久化无意义且有泄露面） |
 | D4 | token/Cookie 仅内存；凭据文件只读 | 最小权限；与上游 redact 约定对齐 | 持久化会话凭据 |
 | D5 | `dsh.channel` 增加 `alpha`，默认仍 `latest` | dist-tag 实证（P11）；默认线零回归，alpha 由用户显式选择 | 默认切 alpha（会把所有用户推入新契约） |
@@ -324,7 +324,7 @@ export function parseBrowserSessionRecord(yamlText: string): { secret: string; v
 | 3 | `src/runtime.ts`：接入 authProxy（start/adopt/reconnect/forceRelaunch/probeTick）；`panelUrl/externalUrl` 语义拆分；ready=带凭据 200+BOOT；401 自愈编排 | 【开发专家】 | 状态机分支与 legacy 行为逐一对拍 |
 | 4 | `src/extension.ts` + `package.json`：`openInBrowser` 用 `externalUrl`；`dsh.channel` 增加 `alpha` 枚举与文案；错误文案（dsh.dshHome/重拉指引） | 【开发专家】 | 配置项 schema 校验 + 命令行为 |
 | 5 | `scripts/sim.mjs`：新增 alpha 契约 mock（裸 GET /→401；`/?token=`→303+Set-Cookie；带 Cookie→200+`__DSH_BOOT__`；凭据 fixture；WS upgrade 桩）+ 双契约全链路用例（沿用 8/8 基线并扩展） | 【测试专家】 | `node scripts/sim.mjs` 全 PASS（旧 8 项 + 新增项） |
-| 6 | `docs/联调测试剧本.md` 增补：alpha 通道（`dsh.channel=alpha`）面板加载/对话/WS、openInBrowser 带 token、外部实例接管（凭据自铸）、latest↔alpha 切换、dsh.dshHome 错配错误态 | 【测试专家】 | 真机剧本可执行、判定标准明确 |
+| 6 | `docs/联调测试剧本.md` 增补：alpha 通道（`dsh.channel=alpha`）面板加载/对话/WS、openInBrowser 带 token、外部实例接管（凭据本地生成）、latest↔alpha 切换、dsh.dshHome 错配错误态 | 【测试专家】 | 真机剧本可执行、判定标准明确 |
 | 7 | 版本 0.1.9、`vsce package` 打包与离线安装验证（卸旧装新 + 完全退出 VSCode） | 【部署专家】 | VSIX 安装后双通道行为符合 §3.4 |
 | 8 | 适配点总表（§3.1）逐项审计：证据引用、影响级别、实现一致性；`docs/调研报告.md` v4 约定修订复核；回归清单（latest 零回归 + alpha 全链路）核签 | 【QA】 | 审计记录 + 回归结论 |
 | 9 | 发布说明：向用户说明 alpha 通道需在设置中显式选择 `dsh.channel=alpha`；稳定线不受影响 | 【部署专家】 | 文案评审 |
