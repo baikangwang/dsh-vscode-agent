@@ -109,7 +109,7 @@ const {
   IDENTITY_QUERY_SCRIPT, IDENTITY_CACHE_TTL_MS, IDENTITY_GRACE_MS, PROCESS_START_SCRIPT,
 } = require('../out/instance.js')
 const { DshRuntime, portBindable, resolveLaunchPort } = require('../out/runtime.js')
-const DP = require('../out/dshProcess.js') // { DshProcess, resolvePortFromLog, probe, treeKill, STARTUP_TIMEOUT_MS, STARTUP_TIMEOUT_MS_START, STARTUP_TIMEOUT_MS_START_NPX, START_LAUNCH_STRATEGY, START_LAUNCHER_LABEL, START_WINDOW_TITLE, START_PAYLOAD_VARIANT, buildStartLaunchCommand, buildConhostLaunchArgv, wrapStartPayloadWithMarkers, markerPrefix, markerSuffix, buildNodeBinStartPayload, buildNpxArgs, buildNpxStartPayload, startPayloadForVariant, startBudgetMsFor, PROBE_POLL_MS, echoSafeText, consoleInfoHeader, withConsoleInfoHeader }
+const DP = require('../out/dshProcess.js') // { DshProcess, resolvePortFromLog, probe, treeKill, STARTUP_TIMEOUT_MS, STARTUP_TIMEOUT_MS_START, STARTUP_TIMEOUT_MS_START_NPX, START_LAUNCH_STRATEGY, START_LAUNCHER_LABEL, START_WINDOW_TITLE, START_PAYLOAD_VARIANT, buildStartLaunchCommand, buildConhostLaunchArgv, wrapStartPayloadWithMarkers, markerPrefix, markerSuffix, buildNodeBinStartPayload, buildNpxArgs, buildNpxStartPayload, startPayloadForVariant, startBudgetMsFor, PROBE_POLL_MS, echoSafeText, consoleInfoHeader, withConsoleInfoHeader, judgeWindowSafeByVersion, WINDOWSAFE_MIN_VERSION, WINDOWSAFE_REGRESSION_MIN_VERSION }
 const Resolver = require('../out/dshResolver.js') // { resolveNodeAndNpm, resolveDshBin, DSH_PKG, ... }
 const PATH = require('../out/paths.js') // { LOOPBACK_HOST, rotateDshLogs, MARKER_SUFFIX_CMD_START, MARKER_SUFFIX_NODE_START, MARKER_SUFFIX_NODE_EXIT, dshLogMarkerFile, ... }
 const { LOOPBACK_HOST } = PATH
@@ -3534,7 +3534,7 @@ async function main() {
     check('PU-9③c dsh.chooseChannel 命令注册 + activationEvents（QuickPick 重入口可达）',
       Array.isArray(pkgSim.contributes.commands) && pkgSim.contributes.commands.some((c) => c.command === 'dsh.chooseChannel') &&
       Array.isArray(pkgSim.activationEvents) && pkgSim.activationEvents.includes('onCommand:dsh.chooseChannel'))
-    check('PU-9③d 版本 0.1.16（发布单点）', pkgSim.version === '0.1.16')
+    check('PU-9③d 版本 0.1.17（发布单点）', pkgSim.version === '0.1.17')
     check('PU-9④ 回归聚合门：PU-1..8 + PP-8 全族此前零失败', failures === 0)
 
     // ==================== 0.1.15 additions (#88/#92, design §8.1/§8.2/§8.1b) ==
@@ -4202,6 +4202,62 @@ async function main() {
     // ---- 0.1.16 新组聚合门 ----------------------------------------------------
     px('0.1.16 新组聚合门（PP-12/PU-12 全组此前零失败，含既有族）')
     check('#93-#99 聚合门：PP-12 + PU-12 与既有全族零失败', failures === 0)
+
+    // ==================== 0.1.17 additions (#1, design §九 #1/#4) ==============
+    // PP-13 WINDOWSAFE 三段门控阈值判定（判据来源：docs/0.1.17调研报告-dsh-0.1.3-
+    // alpha集成面复验与免常驻窗.md §九 #4；ADR-46 版本区间语义）。手法：
+    //  - PP-13-1 纯函数直测（PP-8-6① 先例同型：judgeWindowSafeByVersion +
+    //    compareDshVersions 预发布感知比较器）；期望阈值一律取导出常量引用，
+    //    版本字面仅作测试输入与 check 名称（唯一事实源，不重复硬编码）；
+    //  - PP-13-2 编译产物静态交叉一致性（E-SIM-1 先例：out/dshProcess.js 中
+    //    三段判定 rlog 仅由 consoleVisible=false 守卫块触达；unknown 静默跳过）。
+    px('PP-13 WINDOWSAFE 三段门控阈值（#1：judgeWindowSafeByVersion 区间判定纯函数直测 + 编译产物静态交叉一致性）')
+    // ---- PP-13-1: 版本区间判定（ADR-46 三段区间） ------------------------------
+    check('PP-13-1① 阈值常量单点：WINDOWSAFE_MIN_VERSION = 0.1.3-alpha.1 + WINDOWSAFE_REGRESSION_MIN_VERSION = 0.1.3-alpha.2（三源判定锚；TOKEN_AUTH_MIN_VERSION 同址同模式）',
+      DP.WINDOWSAFE_MIN_VERSION === '0.1.3-alpha.1' && DP.WINDOWSAFE_REGRESSION_MIN_VERSION === '0.1.3-alpha.2')
+    check('PP-13-1② 低于下界 → flashing：0.1.2-alpha.5 / 0.1.2-rc.1（0.1.2 < 0.1.3，隐藏形态上游闪窗取舍）',
+      DP.judgeWindowSafeByVersion('0.1.2-alpha.5') === 'flashing' && DP.judgeWindowSafeByVersion('0.1.2-rc.1') === 'flashing')
+    check('PP-13-1③ 下界闭（等于下界 → zeroFlash 承诺区）：WINDOWSAFE_MIN_VERSION 输入（0.1.3-alpha.1；该版本未发布 npm）',
+      DP.judgeWindowSafeByVersion(DP.WINDOWSAFE_MIN_VERSION) === 'zeroFlash')
+    check('PP-13-1④ semver 预发布序：WINDOWSAFE_MIN_VERSION < WINDOWSAFE_REGRESSION_MIN_VERSION（compareDshVersions < 0；alpha.1 < alpha.2）',
+      DP.compareDshVersions(DP.WINDOWSAFE_MIN_VERSION, DP.WINDOWSAFE_REGRESSION_MIN_VERSION) < 0)
+    check('PP-13-1⑤ 回归上界闭（等于上界起点 → regression）：WINDOWSAFE_REGRESSION_MIN_VERSION 输入（0.1.3-alpha.2；runner 弹窗回归带起点）',
+      DP.judgeWindowSafeByVersion(DP.WINDOWSAFE_REGRESSION_MIN_VERSION) === 'regression')
+    check('PP-13-1⑥ regression 带内单调：0.1.3-beta.1（beta > alpha）/ 0.1.3 / 0.1.4 → regression',
+      DP.judgeWindowSafeByVersion('0.1.3-beta.1') === 'regression' && DP.judgeWindowSafeByVersion('0.1.3') === 'regression' &&
+      DP.judgeWindowSafeByVersion('0.1.4') === 'regression')
+    check('PP-13-1⑦ 不可解析安全侧 → unknown（不告警不承诺）：null / 空串 / not-a-version',
+      DP.judgeWindowSafeByVersion(null) === 'unknown' && DP.judgeWindowSafeByVersion('') === 'unknown' &&
+      DP.judgeWindowSafeByVersion('not-a-version') === 'unknown')
+    // ---- PP-13-2: 编译产物静态交叉一致性（E-SIM-1 先例） ------------------------
+    {
+      const dpSrc17 = fs.readFileSync(path.join(process.cwd(), 'out', 'dshProcess.js'), 'utf8')
+      const guard17 = 'if (this.options.consoleVisible !== true) {'
+      const call17 = 'const windowSafe = judgeWindowSafeByVersion(built.resolved?.version ?? null)'
+      // 三段 rlog 期望文案 = 常量拼接（唯一事实源：文案版本字样与导出常量钉死）
+      const logs17 = [
+        `[dshProcess] 运行时 < ${DP.WINDOWSAFE_MIN_VERSION}，隐藏形态存在上游闪窗取舍`,
+        `隐藏形态零闪窗（零闪窗承诺区 [${DP.WINDOWSAFE_MIN_VERSION}, ${DP.WINDOWSAFE_REGRESSION_MIN_VERSION})，上游 PR #3516）`,
+        `WARN: dsh ≥ ${DP.WINDOWSAFE_REGRESSION_MIN_VERSION} native runner 在隐藏形态存在上游弹窗回归`,
+      ]
+      const guardIdx17 = dpSrc17.indexOf(guard17)
+      // 守卫块字符级括号配平（块内字符串花括号均成对：${...}；配平至块闭合）
+      let depth17 = 0
+      let endIdx17 = -1
+      for (let i = guardIdx17; i < dpSrc17.length; i++) {
+        const ch = dpSrc17[i]
+        if (ch === '{') depth17++
+        else if (ch === '}') { depth17--; if (depth17 === 0) { endIdx17 = i; break } }
+      }
+      check('PP-13-2① 守卫单点：windowSafe 判定仅由 consoleVisible=false 守卫块触达（判定调用恰一次 + 三段 rlog 均落守卫块内；consoleVisible=true 零触达）',
+        guardIdx17 > 0 && endIdx17 > guardIdx17 &&
+        dpSrc17.split(call17).length === 2 && dpSrc17.indexOf(call17) > guardIdx17 && dpSrc17.indexOf(call17) < endIdx17 &&
+        logs17.every((s) => { const k = dpSrc17.indexOf(s); return k > guardIdx17 && k < endIdx17 }))
+      check('PP-13-2② 三段 rlog 各恰一次（单发幂等；零重复触达点）+ 文案版本字样与导出常量逐位一致（唯一事实源）',
+        logs17.every((s) => dpSrc17.split(s).length === 2))
+      check("PP-13-2③ unknown 静默跳过留痕：守卫块内 'unknown' → silent skip（安全侧：不告警不承诺）",
+        dpSrc17.slice(guardIdx17, endIdx17).includes("windowSafe === 'unknown'"))
+    }
 
     // -- 0.1.14 组清理：关闭 in-process 上游 ----------------------------------
     try { upServer.closeAllConnections() } catch { /* best-effort */ }
