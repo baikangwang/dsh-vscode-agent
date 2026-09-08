@@ -69,7 +69,7 @@ code --install-extension dsh-vscode-agent-0.1.16.vsix
 | `dsh.autoOpenPanel` | `true` | 启动后自动展开右侧边栏面板 |
 | `dsh.dshHome` | 空 | DSH_HOME（空 = 默认 `~/.dsh`，与浏览器版共享会话） |
 | `dsh.probeIntervalSec` | `30` | detached dsh 存活探活周期（秒；0 = 关闭探活） |
-| `dsh.consoleVisible` | `true` | `true` = dsh 运行于自持常驻可见控制台（子进程共享该控制台，结构性零弹窗；**关闭窗口 = 停止 dsh**，不自动重拉）；`false` = 完全隐藏（上游修复 windowsHide 后可切回） |
+| `dsh.consoleVisible` | `true` | `true` = dsh 运行于自持常驻可见控制台（子进程共享该控制台，零弹窗；**关闭窗口 = 停止 dsh**，不自动重拉）；`false` = 完全隐藏——dsh = 0.1.3-alpha.1 时零闪窗（上游 PR #3516），但该版本未发布 npm；dsh ≥ 0.1.3-alpha.2 的 native runner 在隐藏形态存在上游弹窗回归（上游 master 未修，等上游修复版）；更低版本保留已知闪窗取舍 |
 
 ## 命令
 

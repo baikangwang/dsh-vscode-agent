@@ -470,6 +470,24 @@ const HTTP_TIMEOUT_MS = 3_000
  */
 export const TOKEN_AUTH_MIN_VERSION = '0.1.2-alpha.2'
 
+/**
+ * 0.1.17 #1 (design §九 v3): the ZERO-FLASH floor of the HIDDEN launch form
+ * (consoleVisible=false). dsh 0.1.3-alpha.1 carries the upstream flash-window
+ * fix (PR #3516) — but that version was NEVER published to npm, so it is
+ * unreachable via npm installs. Single-point constant (TOKEN_AUTH_MIN_VERSION
+ * 同址同模式; 去硬编码).
+ */
+export const WINDOWSAFE_MIN_VERSION = '0.1.3-alpha.1'
+
+/**
+ * 0.1.17 #1 (design §九 v3): the START of the hidden-form popup-REGRESSION
+ * band. dsh ≥ 0.1.3-alpha.2 native runner reintroduced the upstream popup
+ * flash (PR #2825; upstream master unfixed at the time of writing). 上界常量
+ * 的改置由用户评审裁决：待上游修复版正式发布后，由用户评审决定上调（或按
+ * 裁决移除门控）——开发侧不自作主张改置。Single-point constant (去硬编码).
+ */
+export const WINDOWSAFE_REGRESSION_MIN_VERSION = '0.1.3-alpha.2'
+
 /** Contract tier of the RUNNING dsh (§3.3 判定表; pure — version only). */
 export type ContractTier = 'token' | 'legacy' | 'unknown'
 
@@ -546,6 +564,34 @@ export function judgeContractByVersion(version: string | null): ContractTier {
   const cmp = compareDshVersions(version, TOKEN_AUTH_MIN_VERSION)
   if (cmp === null) return 'unknown'
   return cmp >= 0 ? 'token' : 'legacy'
+}
+
+/**
+ * Hidden-form (consoleVisible=false) window-flash contract tier of the RUNNING
+ * dsh (0.1.17 #1, design §九 v3): pure, version-only input — SAME judgement
+ * discipline as judgeContractByVersion, REUSING compareDshVersions (不得另写
+ * 一套比较器). Three MUTUALLY-EXCLUSIVE, EXHAUSTIVE bands + the unknown safe
+ * side:
+ *  - 'flashing'   : < WINDOWSAFE_MIN_VERSION — upstream flash trade-off kept;
+ *  - 'zeroFlash'  : [WINDOWSAFE_MIN_VERSION, WINDOWSAFE_REGRESSION_MIN_VERSION)
+ *                   — the zero-flash promise band (floor version never
+ *                   published to npm);
+ *  - 'regression' : ≥ WINDOWSAFE_REGRESSION_MIN_VERSION — upstream popup
+ *                   regression (PR #2825, master unfixed);
+ *  - 'unknown'    : version null/unparseable → the caller stays SILENT
+ *                   (no warning, no promise — never fabricates a version
+ *                   fact, judgeContractByVersion's PP-8-6① degradation).
+ */
+export type WindowSafeTier = 'flashing' | 'zeroFlash' | 'regression' | 'unknown'
+
+export function judgeWindowSafeByVersion(version: string | null): WindowSafeTier {
+  if (version === null) return 'unknown'
+  const cmpFloor = compareDshVersions(version, WINDOWSAFE_MIN_VERSION)
+  if (cmpFloor === null) return 'unknown'
+  if (cmpFloor < 0) return 'flashing'
+  const cmpRegression = compareDshVersions(version, WINDOWSAFE_REGRESSION_MIN_VERSION)
+  if (cmpRegression === null) return 'unknown'
+  return cmpRegression < 0 ? 'zeroFlash' : 'regression'
 }
 
 /** Thrown by DshProcess.start() when a launch fails to become ready in time. */
@@ -839,6 +885,28 @@ export class DshProcess extends EventEmitter {
     // 0.1.14 ADR-30-1: capture the banner token from THIS launch's log (the
     // T-path session source). Legacy banners yield null (zero regression).
     const banner = resolveBannerFromLog(logFile)
+    // 0.1.17 #1 (design §九 v3): hidden-form (consoleVisible=false) window
+    // facts are VERSION-RANGED. Judgement site = the START() SUCCESS PATH ONLY
+    // — readiness settled (spawn form fixed), running version resolved
+    // (built.resolved, dual-end single source). Idempotence: one successful
+    // launch emits AT MOST one line (failure paths throw before this point,
+    // so retry/backoff attempts never emit; the probe/reconnect cycles never
+    // reach here); it never blocks the launch. consoleVisible=true (resident
+    // form) produces NO such line. Unknown/unresolvable version → silent skip
+    // (no warning, no promise — safe side). The gating key follows the spawn
+    // form (DIRECT arm: `windowsHide: !consoleVisible`): the hidden shape is
+    // exactly `consoleVisible !== true`.
+    if (this.options.consoleVisible !== true) {
+      const windowSafe = judgeWindowSafeByVersion(built.resolved?.version ?? null)
+      if (windowSafe === 'flashing') {
+        appendDecisionLog('[dshProcess] 运行时 < 0.1.3-alpha.1，隐藏形态存在上游闪窗取舍')
+      } else if (windowSafe === 'zeroFlash') {
+        appendDecisionLog(`[dshProcess] 运行时 ${built.resolved?.version ?? ''}，隐藏形态零闪窗（零闪窗承诺区 [0.1.3-alpha.1, 0.1.3-alpha.2)，上游 PR #3516）`)
+      } else if (windowSafe === 'regression') {
+        appendDecisionLog('[dshProcess] WARN: dsh ≥ 0.1.3-alpha.2 native runner 在隐藏形态存在上游弹窗回归（PR #2825 引入，上游 master 未修）；零闪窗仅对 0.1.3-alpha.1 成立，该版本未发布 npm、不可经 npm 安装，建议等待上游修复版')
+      }
+      // windowSafe === 'unknown' → silent skip (version unresolvable/empty).
+    }
     return {
       pid,
       port: readyPort,

@@ -61,8 +61,14 @@ function readConfig(): Cfg {
     probeIntervalSec: c.get<number>('probeIntervalSec', 30),
     // P-POPUP 方案 B (ADR-20, user ruling 2026-08-29): DEFAULT TRUE — dsh runs
     // on a visible console so its tool subprocesses share it (no per-call
-    // popup windows); false = fully hidden (the 0.1.7 accepted shape, switch
-    // back once the upstream windowsHide fix lands).
+    // popup windows); false = fully hidden. 0.1.17 #1: the hidden shape's
+    // flash-window facts are VERSION-RANGED in dshProcess.ts
+    // (WINDOWSAFE_MIN_VERSION / WINDOWSAFE_REGRESSION_MIN_VERSION): < 0.1.3-
+    // alpha.1 keeps the known flash trade-off, 0.1.3-alpha.1 is the only
+    // zero-flash version (never published to npm), ≥ 0.1.3-alpha.2 carries the
+    // upstream popup regression (PR #2825, master unfixed) — NO "switch back
+    // once upstream fixes windowsHide" promise; placement of the regression
+    // bound awaits the upstream fixed release (user-ruled re-adjudication).
     consoleVisible: c.get<boolean>('consoleVisible', true),
   }
 }
