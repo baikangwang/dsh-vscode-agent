@@ -26,7 +26,7 @@
 |---|---|---|
 | 1 | 运行时正确接管外部 dsh 并 ready | `%LOCALAPPDATA%\DshVscode\logs\runtime.log`：`state: starting -> ready`、`adopt: external dsh at http://127.0.0.1:3080 (pid 35248)`、`looksLikeDsh=true` |
 | 2 | 注册表正确持久化接管 pid | `instance.json`：`dsh.pid=35248, managedBy=external, port=3080`；窗口 25560 已登记 |
-| 3 | 已装扩展为 0.1.2，CSP 修复在位 | `%USERPROFILE%\.vscode\extensions\dsh-vscode-agent.dsh-vscode-agent-0.1.2\out\webview.js`：`style-src 'unsafe-inline'; script-src 'unsafe-inline'; frame-src http://127.0.0.1:*`，含 acquireVsCodeApi 诊断分支 |
+| 3 | 已装扩展为 0.1.2，CSP 修复已就位 | `%USERPROFILE%\.vscode\extensions\dsh-vscode-agent.dsh-vscode-agent-0.1.2\out\webview.js`：`style-src 'unsafe-inline'; script-src 'unsafe-inline'; frame-src http://127.0.0.1:*`，含 acquireVsCodeApi 诊断分支 |
 | 4 | webview 端代码正确、会自我隐藏 overlay | 安装版 `webview.js` 与源码一致：收到 `state:ready`/`setUrl` 即 `overlay.classList.add('hide')`、`frame.src=url` |
 | 5 | dsh web 页面可被 frame、无自身 "Initializing" 界面 | `GET /` 200 且含 `__DSH_BOOT__`；无 CSP/X-Frame-Options 阻止 frame；全量 44 个 JS 包仅发现 "initializing"（代码注释）/“加载中”（i18n），无独立 Initializing 界面 → “Initializing” 只能是本扩展 webview 的占位文字 |
 | 6 | 面板在 ready 前就被解析 | exthost.log：`0:52:25 activate onView:dsh.panel`；runtime.log：`0:52:26 start`、`0:52:33 ready` → 面板解析先于 ready 约 8s（正是丢消息窗口） |

@@ -1,7 +1,7 @@
 # 面板卡「Initializing」根因分析 · v3（0.1.4 真机复核）
 
 > 场景：用户重装 `dsh-vscode-agent-0.1.4.vsix`、重启 VSCode 后，右下状态栏显示 `DSH 3080`（运行时已 ready），但右侧 DSH 面板仍停在 `initializing…`。
-> 版本：DSH Panel **0.1.4（已装，握手+ack+补推在位）** · VSCode 1.135.0 · dsh（CLI 0.1.1-rc.2）
+> 版本：DSH Panel **0.1.4（已装，握手+ack+补推已就位）** · VSCode 1.135.0 · dsh（CLI 0.1.1-rc.2）
 > 类型：排障 / 根因复核（A1 完整链入口）· 日期：2026-08-27 · 状态：**第 3 轮根因复核；推翻「view 未建立」前提；定位到「webview 文档未渲染/未握手」；给出 v4 设计待 QA 设计/用户评审**
 > 证据会话：窗口 `win 35964`，启动段 `2026-08-27T02:04:23–25Z`（= 本地 10:04:23–25），VSCode 日志 `%APPDATA%\Code\logs\20260827T100403\`
 
@@ -314,7 +314,7 @@ Extension host                                     Webview 渲染进程（页面
 |---|---|---|
 | 1 | 运行时正确接管外部 dsh 并 ready | `%LOCALAPPDATA%\DshVscode\logs\runtime.log`：`state: starting -> ready`、`adopt: external dsh at http://127.0.0.1:3080 (pid 35248)`、`looksLikeDsh=true` |
 | 2 | 注册表正确持久化接管 pid | `instance.json`：`dsh.pid=35248, managedBy=external, port=3080`；窗口 25560 已登记 |
-| 3 | 已装扩展为 0.1.2，CSP 修复在位 | `%USERPROFILE%\.vscode\extensions\dsh-vscode-agent.dsh-vscode-agent-0.1.2\out\webview.js`：`style-src 'unsafe-inline'; script-src 'unsafe-inline'; frame-src http://127.0.0.1:*`，含 acquireVsCodeApi 诊断分支 |
+| 3 | 已装扩展为 0.1.2，CSP 修复已就位 | `%USERPROFILE%\.vscode\extensions\dsh-vscode-agent.dsh-vscode-agent-0.1.2\out\webview.js`：`style-src 'unsafe-inline'; script-src 'unsafe-inline'; frame-src http://127.0.0.1:*`，含 acquireVsCodeApi 诊断分支 |
 | 4 | webview 端代码正确、会自我隐藏 overlay | 安装版 `webview.js` 与源码一致：收到 `state:ready`/`setUrl` 即 `overlay.classList.add('hide')`、`frame.src=url` |
 | 5 | dsh web 页面可被 frame、无自身 "Initializing" 界面 | `GET /` 200 且含 `__DSH_BOOT__`；无 CSP/X-Frame-Options 阻止 frame；全量 44 个 JS 包仅发现 "initializing"（代码注释）/“加载中”（i18n），无独立 Initializing 界面 → “Initializing” 只能是本扩展 webview 的占位文字 |
 | 6 | 面板在 ready 前就被解析 | exthost.log：`0:52:25 activate onView:dsh.panel`；runtime.log：`0:52:26 start`、`0:52:33 ready` → 面板解析先于 ready 约 8s（正是丢消息窗口） |
@@ -405,7 +405,7 @@ VSCode webview 的 `postMessage`（宿主→webview）在 webview **尚未完成
 # 面板卡「Initializing」根因分析 · v2（0.1.3 复核）
 
 > 场景复述：用户重装 `dsh-vscode-agent-0.1.3.vsix`、重启 VSCode 后，右下状态栏显示 `DSH 3080`（运行时已 ready），但右侧 DSH 面板仍停在 `initializing…`。
-> 版本：DSH Panel 0.1.3（已装，握手修复在位）· VSCode 1.135.0 · dsh（CLI 0.1.1-rc.2，前端 web-frontend 同）
+> 版本：DSH Panel 0.1.3（已装，握手修复已就位）· VSCode 1.135.0 · dsh（CLI 0.1.1-rc.2，前端 web-frontend 同）
 > 类型：排障 / 根因复核 + 解决方案设计（A1 完整链入口）
 > 日期：2026-08-27 · 状态：**根因已复核定位，0.1.3 方案被证明不充分；给出 v3 设计待 QA 设计/用户评审**
 
@@ -415,7 +415,7 @@ VSCode webview 的 `postMessage`（宿主→webview）在 webview **尚未完成
 
 - **背景**：0.1.2 诊断结论为「webview 启动竞态 + 缺握手」，0.1.3 已按 0.1.2 版 §5.1/5.2 实施
   （webviewReady 握手 + dispose 置空 + 清 lastUrl，commit `e00f974`，分支 `fix-webview-boot-race`）。
-- **目标**：复核 0.1.3 已装、握手在位的前提下，面板为何仍卡 `initializing…`；给出**真正的缺陷点**与可落地的 v3 解决方案设计（含角色分工清单）。
+- **目标**：复核 0.1.3 已装、握手已就位的前提下，面板为何仍卡 `initializing…`；给出**真正的缺陷点**与可落地的 v3 解决方案设计（含角色分工清单）。
 - **产出**：本 v2 文档（正式，git 跟踪）；一次性探针中间稿在 `.dsh/tmp/architect/`（轮级，闭环清理）。
 
 ---
@@ -454,7 +454,7 @@ VSCode webview 的 `postMessage`（宿主→webview）在 webview **尚未完成
 
 | # | 事实 | 证据 |
 |---|---|---|
-| 1 | 安装版为 0.1.3，**握手代码在位**（exthost `case 'webviewReady'` + 页面 `postMessage({type:'webviewReady'})` + dispose 置空/清 lastUrl） | 安装版 `out/webview.js` L59/L187/L83-85 与 src 一致 |
+| 1 | 安装版为 0.1.3，**握手代码已就位**（exthost `case 'webviewReady'` + 页面 `postMessage({type:'webviewReady'})` + dispose 置空/清 lastUrl） | 安装版 `out/webview.js` L59/L187/L83-85 与 src 一致 |
 | 2 | 运行时**确实到 ready**：`[win 36652] state: starting->ready` + `adopt external dsh at http://127.0.0.1:3080 (pid 35864)` | `%LOCALAPPDATA%\DshVscode\logs\runtime.log` 末条 18:28:54Z |
 | 3 | 端口 3080 有 dsh 在监听并提供 GUI，`GET /` 200 含 `__DSH_BOOT__`；当前 GUI 即运行于其上 | `netstat`；Invoke-WebRequest |
 | 4 | dsh 前端**无 "initializing" 文案**；自身 boot 卡片文案为 **"Loading plugins…"**（wordmark HARNESS + spinner），错误走 `page.fail(msg)` | web-frontend `dist/index.html` + bundle `index-ClqxG24t.js`（"Initializing" 0 命中） |
@@ -551,7 +551,7 @@ Webview(页面)                           Extension host
 |---|---|---|---|---|
 | 握手机制 | ①一次性 webviewReady 握手（0.1.3 现状）；②带 ack 的自愈状态机（v3） | 消息「单次推送、无反向 ack、无超时自愈」；`refresh()` 首行 `if(!view) return` 使 view 置空窗口内重推静默归零 | 采用 v3 带 ack 的自愈状态机：反向 `stateAck` + 比对补推 + 超时兜底 | 0.1.3 一次性推仅降低丢概率、不消除丢点，且无观测/自愈手段，真实环境仍可复现永久 `initializing…`；ack 回环 + 比对补推 + 超时兜底能抗「推了但页面没收到/没显示」与 view 置空窗口 |
 | 心跳机制 | 轮询心跳（候选） | 额外消息量/复杂度/非必要；已有 ack 提供防御性自愈 | 否决轮询心跳；ack 仅作「不一致补推」保险，不阻塞正常推送路径 | 推送仍由 `runtime.on('state')` 与 `resolveWebviewView` 驱动，ack 只作保险；轮询会引入定时器热循环、复杂度与日志噪音，属过度设计 |
-| retainContextWhenHidden 加固 | 额外加固（候选） | `retainContextWhenHidden:false` 下页面重载会重发 `webviewReady` | 保留现有配置，利用「重载重发」实现自愈，不额外加固 | 每次页面重载都重发 `webviewReady` → 触发 push，天然自愈；加固既有方案有效且零新增成本 |
+| retainContextWhenHidden 加固 | 额外加固（候选） | `retainContextWhenHidden:false` 下页面重载会重发 `webviewReady` | 保留现有配置，利用「重载重发」实现自愈，不额外加固 | 每次页面重载都重发 `webviewReady` → 触发 push，天然自愈；加固既有方案有效且没有新增成本 |
 | 常量命名 | 行内硬编码超时/补推次数 | 去硬编码、可维护性 | 收敛为模块内命名常量 `ACK_BUDGET_MS`、`MAX_REPUSH` | 与 `dshProcess.ts` 的 `READY_TIMEOUT_MS` 命名风格对齐；常量集中、语义清晰，便于调整与测试断言 |
 | 日志观测 | 复用 `runtimeLogFile()` 写 runtime.log（`dsh.panel` 消息链） | webview.ts 现状零日志、消息链路不可观测；上轮 qa_publish P5「真机联调从未自动验证」仅肉眼 REQ_USER | 统一写日志入口，记录 `emit/recv/ack` 消息链 | 补足 P5 缺口：将真机联调通过判据自动化为 runtime.log 中可 grep 的 `dsh.panel` 消息链，供无头/QAAutomation 断言，不再纯肉眼 |
 

@@ -297,7 +297,7 @@ export class DshRuntime extends EventEmitter {
         channel: this.options.channel,
         externalCommandLine: this.externalCommandLine,
         // 0.1.14 第 16 个可选字段：token 契约档（T 路径）的带 token 直达 URL；
-        // legacy/降级快照恒 null（null = 旧契约，既有 15 字段消费者零破坏）。
+        // legacy/降级快照恒 null（null = 旧契约，不会破坏既有 15 字段消费者）。
         externalUrl: managed ? this.externalUrl : null,
         launchLogFile: managed ? logFile : null,
         degraded: !managed,

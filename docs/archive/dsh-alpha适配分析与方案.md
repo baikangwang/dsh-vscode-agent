@@ -77,7 +77,7 @@ dsh 发布 alpha 后，`dsh web` 启动要求 token：浏览器打开 `dsh web` 
 | A3 | 端口/凭证横幅解析 | `src/dshProcess.ts:47,72-80` `URL_RE` 仅取端口 | `web-app.spec.ts:146`：横幅为 `dsh web: http://127.0.0.1:<port>/?token=<43位base64url> (LAN: …)` | 降级 | 新增 token 捕获正则；端口正则保持兼容（前缀未变） |
 | A4 | 固定端口就绪路径 | `src/dshProcess.ts:96-98,143-149` `fixedPortPath` 不读日志、直接裸探 | alpha 下裸探恒 401 → 永不就绪；token 仅在日志横幅 | 降级 | alpha 契约下固定端口路径同样 tail 日志（token + 就绪双信号），再带凭据确认 |
 | A5 | 接管外部实例的鉴权 | `src/instance.ts:428-431` 特征校验成立；但外部实例 token 无从获取 | `browser-auth.ts:52-58`：launch token 仅存进程内 WeakMap，不落盘；签名 secret 持久化于 DSH_HOME | 降级 | 读 `<dshHome>/.credentials.yaml` 记录 `client-connection/browser-session` 本地生成会话 Cookie（§3.4） |
-| A6 | 版本通道 | `package.json:74-82` `dsh.channel` 仅 `latest/preview` | `scripts/release/families.ts`（commit 45455aae77）：alpha 版发布于 npm dist-tag **`alpha`**（rc→next、稳定→latest） | 降级 | `dsh.channel` 枚举增加 `alpha`；默认保持 `latest`（旧契约，零回归） |
+| A6 | 版本通道 | `package.json:74-82` `dsh.channel` 仅 `latest/preview` | `scripts/release/families.ts`（commit 45455aae77）：alpha 版发布于 npm dist-tag **`alpha`**（rc→next、稳定→latest） | 降级 | `dsh.channel` 枚举增加 `alpha`；默认保持 `latest`（旧契约，没有回归） |
 | A7 | openInBrowser | `src/extension.ts:104-108` 打开 `runtime.url`（裸） | 浏览器顶层导航带 token 才能换取 Cookie（`web-auth.e2e.ts:173-181`） | 降级 | 打开带 token 的 URL（managed：横幅 token；外部：裸 URL + 401 页自带指引文案） |
 | A8 | WebSocket 透传 | 现架构浏览器同源直连，无代理 | `packages/api/gateway/src/index.ts:212-228`：`/api/remote.mux` upgrade 走 `requestRejection`（Cookie 鉴权） | 降级 | 代理转发 upgrade：向上游发起带 Cookie 的 upgrade，成功后双向 pipe（§3.3） |
 | A9 | 无头测试桩 | `scripts/sim.mjs:210-219` mock 恒 200+`__DSH_BOOT__`；横幅无 token | 新契约行为（401/303+Set-Cookie/凭据文件） | 降级（测试） | 新增 alpha 契约 mock server + 双契约回归用例（§9） |
@@ -310,7 +310,7 @@ export function parseBrowserSessionRecord(yamlText: string): { secret: string; v
 | D2 | 凭据获取顺序：T（日志 token 交换）→ C（凭据库本地生成）→ 错误态 | T 走公开打印 URL 契约（最稳）；C 覆盖接管外部实例与日志缺失场景；两者失败给出可操作错误而非静默 | 「用户手填 token」不入 v1（指引即可） |
 | D3 | 注册表 schema 不变；契约状态每窗口自探测推导 | 避免 `instance.json` 跨版本兼容问题；凭据库是共享事实源，多窗口天然一致 | 在 DshRecord 中持久化 authMode/token（token 每启动即变，持久化无意义且有泄露面） |
 | D4 | token/Cookie 仅内存；凭据文件只读 | 最小权限；与上游 redact 约定对齐 | 持久化会话凭据 |
-| D5 | `dsh.channel` 增加 `alpha`，默认仍 `latest` | dist-tag 实证（P11）；默认线零回归，alpha 由用户显式选择 | 默认切 alpha（会把所有用户推入新契约） |
+| D5 | `dsh.channel` 增加 `alpha`，默认仍 `latest` | dist-tag 实证（P11）；默认线没有回归，alpha 由用户显式选择 | 默认切 alpha（会把所有用户推入新契约） |
 | D6 | 契约开关 = 运行时探测（401 vs 200+BOOT），版本号仅诊断 | 去硬编码红线；上游未来回退/调整行为时无需改分支逻辑 | 以 `0.1.2` 版本号硬编码判断 |
 
 ---
@@ -326,7 +326,7 @@ export function parseBrowserSessionRecord(yamlText: string): { secret: string; v
 | 5 | `scripts/sim.mjs`：新增 alpha 契约 mock（裸 GET /→401；`/?token=`→303+Set-Cookie；带 Cookie→200+`__DSH_BOOT__`；凭据 fixture；WS upgrade 桩）+ 双契约全链路用例（沿用 8/8 基线并扩展） | 【测试专家】 | `node scripts/sim.mjs` 全 PASS（旧 8 项 + 新增项） |
 | 6 | `docs/联调测试剧本.md` 增补：alpha 通道（`dsh.channel=alpha`）面板加载/对话/WS、openInBrowser 带 token、外部实例接管（凭据本地生成）、latest↔alpha 切换、dsh.dshHome 错配错误态 | 【测试专家】 | 真机剧本可执行、判定标准明确 |
 | 7 | 版本 0.1.9、`vsce package` 打包与离线安装验证（卸旧装新 + 完全退出 VSCode） | 【部署专家】 | VSIX 安装后双通道行为符合 §3.4 |
-| 8 | 适配点总表（§3.1）逐项审计：证据引用、影响级别、实现一致性；`docs/调研报告.md` v4 约定修订复核；回归清单（latest 零回归 + alpha 全链路）核签 | 【QA】 | 审计记录 + 回归结论 |
+| 8 | 适配点总表（§3.1）逐项审计：证据引用、影响级别、实现一致性；`docs/调研报告.md` v4 约定修订复核；回归清单（latest 没有回归 + alpha 全链路）核签 | 【QA】 | 审计记录 + 回归结论 |
 | 9 | 发布说明：向用户说明 alpha 通道需在设置中显式选择 `dsh.channel=alpha`；稳定线不受影响 | 【部署专家】 | 文案评审 |
 
 ---

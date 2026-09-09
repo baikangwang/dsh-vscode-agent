@@ -2183,7 +2183,7 @@ async function main() {
       r34.dispose()
 
       // ---- PP-3-5: launchInfo / details card zero impact + family marker --
-      px('PP-3-5 launchInfo/详情卡零影响：launcher 变体仅 rlog 留痕，launchMode 保持二值')
+      px('PP-3-5 launchInfo/详情卡没有影响：launcher 变体仅 rlog 留痕，launchMode 保持二值')
       globalThis.fetch = step2FailPP3()
       seedInst({ dsh: null, windows: [] })
       releaseStartupLock()
@@ -2196,11 +2196,11 @@ async function main() {
       check('PP-3-5① start(/wait) 成功路径 launchInfo 完整且 launchMode=start（launcher 变体不经 launchInfo 透出，15 字段零改动）',
         snap35 !== null && snap35.launchMode === 'start' && !('launcher' in snap35) &&
         snap35.binDir !== null && snap35.dshBin !== null && snap35.port === 3118 && snap35.pid === holderPid3)
-      check('PP-3-5② 详情卡零影响：启动方式呈 start 常驻控制台文案锚点（PU 契约原样）',
+      check('PP-3-5② 详情卡没有影响：启动方式呈 start 常驻控制台文案锚点（PU 契约原样）',
         html35.includes('启动方式') && html35.includes('常驻控制台窗'))
       check('PP-3-5③ launcher 变体仅 rlog 留痕：launcher=conhost（§4.8.5 切换纪律；0.1.12 生产基线 = ADR-26 conhost 形态）',
         rlogSlice(off35).includes('launcher=conhost'))
-      check('PP-3-5④ 全族零回归（PV/PW/PI/PP-1/PP-2/PU/PP-3 至此零失败）', failures === 0)
+      check('PP-3-5④ 全族没有回归（PV/PW/PI/PP-1/PP-2/PU/PP-3 至此没有失败）', failures === 0)
       r35.dispose()
     } finally {
       router.captureLaunch = false
@@ -2330,7 +2330,7 @@ async function main() {
       '分支未选中：同 PP-4-3（escape arm 未实施，无契约可断言；SKIP 不算失败）')
 
     // ---- PP-4-5: 全族回归 ----
-    check('PP-4-5 全族零回归（marker 追加不触碰 direct 形态——PP-2-2 逐位一致仍成立；STARTUP_TIMEOUT_MS 未触碰 PP-3-3 原样）', failures === 0)
+    check('PP-4-5 全族没有回归（marker 追加不触碰 direct 形态——PP-2-2 逐位一致仍成立；STARTUP_TIMEOUT_MS 未触碰 PP-3-3 原样）', failures === 0)
     router.captureLaunch = false
     router.onLaunch = null
     globalThis.fetch = origFetch
@@ -2580,7 +2580,7 @@ async function main() {
     check('PP-5-4③ 降级 rlog 双锚点（falling back to direct + 无常驻窗口降级态）+ registry launchMode=direct + ready',
       rlogSlice(off54).includes('falling back to direct') && rlogSlice(off54).includes('无常驻窗口降级态') &&
       r54.state === 'ready' && readInstance().dsh !== null && readInstance().dsh.launchMode === 'direct')
-    check('PP-5-4④ 全族零回归（PV/PW/PI/PP-1..4/PU 至此零失败）', failures === 0)
+    check('PP-5-4④ 全族没有回归（PV/PW/PI/PP-1..4/PU 至此没有失败）', failures === 0)
     r54.dispose()
 
     globalThis.fetch = origFetch
@@ -2809,7 +2809,7 @@ async function main() {
     }
 
     // ---- PP-6-5: 全族回归 ----
-    check('PP-6-5 全族零回归（PV/PW/PI/PP-1..5/PU 至此零失败；direct 端口范围与 custom-command 边界零触碰）', failures === 0)
+    check('PP-6-5 全族没有回归（PV/PW/PI/PP-1..5/PU 至此没有失败；direct 端口范围与 custom-command 边界不触碰）', failures === 0)
     globalThis.fetch = origFetch
     router.captureLaunch = false
     router.onLaunch = null
@@ -2817,7 +2817,7 @@ async function main() {
   }
 
   // ==================== 0.1.13 PP-7 (design §11.1 v2.17, ADR-27) ====================
-  px('PP-7 ADR-27 常驻控制台窗口静态信息头：纯 builder 单元 / 单点叠加契约（conhost 启动分支）/ direct-custom 零触 / 字符集安全与长度 / marker-F-PORT 家族回归')
+  px('PP-7 ADR-27 常驻控制台窗口静态信息头：纯 builder 单元 / 单点叠加契约（conhost 启动分支）/ direct-custom 不触碰 / 字符集安全与长度 / marker-F-PORT 家族回归')
   {
     resetResolverState()
     const origFetch7 = globalThis.fetch
@@ -2921,8 +2921,8 @@ async function main() {
       check('PP-7-2④ START_PAYLOAD_VARIANT 两取值复合同型（patched 副本构建失败）', false)
     }
 
-    // ---- PP-7-3: direct / custom 零触 ----
-    px('PP-7-3 direct/custom 零触：direct spawn 形态零信息头痕迹（默认 / 显式 direct / 早退×2 回退三形态）+ custom startPayload=null 原样')
+    // ---- PP-7-3: direct / custom 不触碰 ----
+    px('PP-7-3 direct/custom 不触碰：direct spawn 形态零信息头痕迹（默认 / 显式 direct / 早退×2 回退三形态）+ custom startPayload=null 原样')
     router.calls.length = 0
     router.onLaunch = () => fakeChild({ pid: 4803, code: 0 })
     await new DP.DshProcess({ port: 3143, channel: 'latest', command: '', dshHome: '' }).start()
@@ -2967,13 +2967,13 @@ async function main() {
     r73.dispose()
 
     // ---- PP-7-4: 字符集安全 + 长度预算 ----
-    px('PP-7-4 信息头字符集安全与长度预算：输出头无裸 [&|<>^"%!] + 括号仅存于 echo 段内 + 零新增双引号 + 最长现实样本 < 8191')
+    px('PP-7-4 信息头字符集安全与长度预算：输出头无裸 [&|<>^"%!] + 括号仅存于 echo 段内 + 不新增双引号 + 最长现实样本 < 8191')
     const segs74 = DP.consoleInfoHeader(HDR_LOG).split(' & ')
     const BAD_RE = /[&|<>^"%!]/
     check('PP-7-4① 输出头按链段切分 = 10 段且每段 echo 文本位无裸禁字符（echoSafe 后静态扫描；echo. 空行段除外）',
       segs74.length === 10 && segs74[segs74.length - 1] === 'echo.' &&
       segs74.slice(0, 9).every((seg) => seg.startsWith('echo ') && !BAD_RE.test(seg.slice(5))))
-    check('PP-7-4② 括号仅出现于 echo 段内部（顶层字面存活——探针 ⑤-a）+ 零新增双引号（信息头串内无 " 字符）',
+    check('PP-7-4② 括号仅出现于 echo 段内部（顶层字面存活——探针 ⑤-a）+ 不新增双引号（信息头串内无 " 字符）',
       segs74.filter((seg) => seg.includes('(') || seg.includes('（')).every((seg) => seg.startsWith('echo ')) &&
       !DP.consoleInfoHeader(HDR_LOG).includes('"') && !DP.consoleInfoHeader(BAD_LOG).includes('"'))
     const LONG_LOG = `C:\\Users\\${'用户名特别长的目录名'.repeat(8)}（工作区）\\AppData\\Local\\DshVscode\\logs\\dsh-20260901-120000.log`
@@ -2988,7 +2988,7 @@ async function main() {
     check('PP-7-5① 复合串尾锚 = >> "LOG" 2>&1（writeBanner/resolvePortFromLog 尾锚数据源不受信息头前缀影响）+ 信息头段无 --port 字样（载荷端口提取不受扰）',
       peeled72 !== null && peeled72.payload.endsWith(`>> "${info72.logFile}" 2>&1`) &&
       specInfoHeader(info72.logFile).split(' & ').every((seg) => !seg.includes('--port')))
-    check('PP-7-5② marker 家族（PP-4-1/PP-4-2）在复合载荷下原样 PASS + 聚合检查 PP-2-8/PU-7/PP-3-5④/PP-4-5/PP-5-4④/PP-6-5 全绿（本块之前零失败）',
+    check('PP-7-5② marker 家族（PP-4-1/PP-4-2）在复合载荷下原样 PASS + 聚合检查 PP-2-8/PU-7/PP-3-5④/PP-4-5/PP-5-4④/PP-6-5 全绿（本块之前没有失败）',
       failures === 0)
 
     globalThis.fetch = origFetch7
@@ -3391,7 +3391,7 @@ async function main() {
 
     // ---- PP-8-5: 全族回归聚合检查 ----------------------------------------------
     px('PP-8-5 全族回归聚合检查')
-    check('PP-8-5 token 组（PP-8-1..4）与既有族（PV/PW/PI/PP-1..7/PU）此前零失败', failures === 0)
+    check('PP-8-5 token 组（PP-8-1..4）与既有族（PV/PW/PI/PP-1..7/PU）此前没有失败', failures === 0)
 
     // ---- PP-8-6: 版本阈值判定（判定表单测）-----------------------------------
     px('PP-8-6 版本阈值判定：judgeContractByVersion / compareDshVersions 纯函数直测 + 矛盾态装配')
@@ -3535,7 +3535,7 @@ async function main() {
       Array.isArray(pkgSim.contributes.commands) && pkgSim.contributes.commands.some((c) => c.command === 'dsh.chooseChannel') &&
       Array.isArray(pkgSim.activationEvents) && pkgSim.activationEvents.includes('onCommand:dsh.chooseChannel'))
     check('PU-9③d 版本 0.1.17（发布单点）', pkgSim.version === '0.1.17')
-    check('PU-9④ 回归聚合检查：PU-1..8 + PP-8 全族此前零失败', failures === 0)
+    check('PU-9④ 回归聚合检查：PU-1..8 + PP-8 全族此前没有失败', failures === 0)
 
     // ==================== 0.1.15 additions (#88/#92, design §8.1/§8.2/§8.1b) ==
     // PP-10（adopt 会话定案 / awaitingChannel / 切换器 / #87 检查）、PU-10（静态）、
@@ -3605,7 +3605,7 @@ async function main() {
         stateSeq[0].url === null && stateSeq[1].url !== null)
       check('PP-10-1③ ready 首帧载荷 url = 最终代理 URL（一次性终态渲染；非裸 URL、非 token 形态）',
         stateSeq[1].url === `http://127.0.0.1:${r10.proxy.port}` && r10.url === stateSeq[1].url && !String(r10.url).includes('token='))
-      check('PP-10-1④ 零新增 emit 面（动态）：事件名 ⊆ {state}、state 载荷为字符串（事件载荷形状不变）',
+      check('PP-10-1④ 不新增 emit 事件（动态）：事件名 ⊆ {state}、state 载荷为字符串（事件载荷形状不变）',
         eventNames.length > 0 && eventNames.every((e) => e === 'state') && stateSeq.every((x) => typeof x.state === 'string'))
       r10.dispose()
     }
@@ -3681,7 +3681,7 @@ async function main() {
       const openExternalCalls = []
       // 跨 fake 的单一时间线（PU-9②b mock 先例）：config.update 与 runtime
       // spy 都 push 进同一个数组，调用序断言才有可比索引（两个独立数组的
-      // 索引互不可比——首跑曾因此假阴性）。
+      // 索引互不可比——首次运行曾因此假阴性）。
       const timeline = []
       const providers = {}
       const cmdHandlers = {}
@@ -4016,7 +4016,7 @@ async function main() {
         })())
       check('PU-11-1② 面板 CSP script-src 含 cspSource 插值（#90①；runtime 属性、非猜测 scheme）',
         known11.includes(`script-src 'unsafe-inline' ${CSP11};`))
-      check('PU-11-1③ 单参兼容：空 cspSource 保持旧形（既有 sim/直接写入路径零破坏，#90 增参可选）',
+      check('PU-11-1③ 单参兼容：空 cspSource 保持旧形（不会破坏既有 sim/直接写入路径，#90 增参可选）',
         legacy11.includes("script-src 'unsafe-inline';") && !legacy11.includes("script-src 'unsafe-inline' http"))
       const bridgeSeg11 = script11.slice(script11.indexOf('function bridgeDown'), script11.indexOf('function post'))
       check('PU-11-1④ 死亡分支诊断可见：classList.remove(hide) + #state 双写（#90③；不再写进隐藏层静默）',
@@ -4093,8 +4093,8 @@ async function main() {
     }
 
     // ---- 0.1.15 新组聚合检查 ----------------------------------------------------
-    px('0.1.15 新组聚合检查（PP-10/PU-10/PP-11/PU-11 全组此前零失败，含既有族）')
-    check('#88/#92 聚合检查：PP-10 + PU-10 + PP-11 + PU-11 与既有全族零失败', failures === 0)
+    px('0.1.15 新组聚合检查（PP-10/PU-10/PP-11/PU-11 全组此前没有失败，含既有族）')
+    check('#88/#92 聚合检查：PP-10 + PU-10 + PP-11 + PU-11 与既有全族没有失败', failures === 0)
 
     // ==================== 0.1.16 additions (#96/#97/#98, design §八/§九) ======
     // PP-12 进程启动时刻数据链（判据来源：docs/0.1.16修复设计-视图页签标题与
@@ -4128,7 +4128,7 @@ async function main() {
         info17.processStartedAt === '2026-09-01T12:30:33.000Z')
       const info17b = LI.buildLaunchInfo({ rec: { pid: mockPid, port: MOCK_PORT, managedBy: 'managed-own', startedAt: '2026-09-02T01:00:00.000Z' } })
       check('PP-12-2② rec 无字段 → null（旧 registry 容忍面）', info17b.processStartedAt === null)
-      check('PP-12-2③ 既有 16 字段键零回归 + 新增第 17 键（键集恰 17）',
+      check('PP-12-2③ 既有 16 字段键没有回归 + 新增第 17 键（键集恰 17）',
         ['dshVersion', 'resolverVersion', 'versionCrossCheck', 'binDir', 'dshBin', 'channel', 'resolverMode', 'lastCheckAt', 'launchMode', 'port', 'pid', 'managedBy', 'startedAt', 'logFiles', 'externalCommandLine', 'externalUrl'].every((k) => k in info17) &&
         Object.keys(info17).length === 17)
 
@@ -4200,8 +4200,8 @@ async function main() {
     }
 
     // ---- 0.1.16 新组聚合检查 ----------------------------------------------------
-    px('0.1.16 新组聚合检查（PP-12/PU-12 全组此前零失败，含既有族）')
-    check('#93-#99 聚合检查：PP-12 + PU-12 与既有全族零失败', failures === 0)
+    px('0.1.16 新组聚合检查（PP-12/PU-12 全组此前没有失败，含既有族）')
+    check('#93-#99 聚合检查：PP-12 + PU-12 与既有全族没有失败', failures === 0)
 
     // ==================== 0.1.17 additions (#1, design §九 #1/#4) ==============
     // PP-13 WINDOWSAFE 三段检查阈值判定（判据来源：docs/0.1.17调研报告-dsh-0.1.3-
@@ -4249,7 +4249,7 @@ async function main() {
         if (ch === '{') depth17++
         else if (ch === '}') { depth17--; if (depth17 === 0) { endIdx17 = i; break } }
       }
-      check('PP-13-2① 守卫单点：windowSafe 判定仅由 consoleVisible=false 守卫块触达（判定调用恰一次 + 三段 rlog 均落守卫块内；consoleVisible=true 零触达）',
+      check('PP-13-2① 守卫单点：windowSafe 判定仅由 consoleVisible=false 守卫块触达（判定调用恰一次 + 三段 rlog 均落守卫块内；consoleVisible=true 不触达）',
         guardIdx17 > 0 && endIdx17 > guardIdx17 &&
         dpSrc17.split(call17).length === 2 && dpSrc17.indexOf(call17) > guardIdx17 && dpSrc17.indexOf(call17) < endIdx17 &&
         logs17.every((s) => { const k = dpSrc17.indexOf(s); return k > guardIdx17 && k < endIdx17 }))

@@ -89,13 +89,13 @@ export interface DshLaunchInfo {
   /**
    * 0.1.14 第 16 个可选字段（design §0.5/§3.6）：token 契约档（T 路径）下
    * openInBrowser 外发的带 token banner URL；null = 旧契约（直连裸 URL 原样）
-   * 或降级快照。既有 15 字段消费者零破坏；D3：该值仅存内存快照，registry
-   * （instance.json）零新增字段、零 token 落盘；状态栏/详情卡不渲染本字段。
+   * 或降级快照。不会破坏既有 15 字段消费者；D3：该值仅存内存快照，registry
+   * （instance.json）没有新增字段、不落盘 token；状态栏/详情卡不渲染本字段。
    */
   externalUrl?: string | null
   /**
    * 0.1.16 第 17 个可选字段（#16 externalUrl 同型 additive 先例，既有 16 字段
-   * 消费者零破坏）：dsh 进程真实创建时刻（OS 报告，ISO-8601 UTC 存储；registry
+   * 消费者不受破坏）：dsh 进程真实创建时刻（OS 报告，ISO-8601 UTC 存储；registry
    * processStartedAt 透传）。与 startedAt（接管/记录时刻）语义分离（ADR-39）：
    * null = 查询失败 / 超时 / 非 win32 / 旧记录无字段 → 详情卡「启动时间」显示
    * 「未知」，**绝不回退显示 startedAt**（ADR-40④：两种语义不得再搅进一个格子）。
