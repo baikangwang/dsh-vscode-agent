@@ -88,6 +88,18 @@
 // rewrite; resolve-title readback evidence lines; the two 启动时间 rows
 // switched to the process-start source; the showDetails fallback chain
 // re-anchored to dsh-configContainer).
+// 0.1.18 additions (design §10.1 PU-13, ADR-48): PU-13-1..7 (external-takeover
+// version family — five-quadrant assembly of the three new external-only
+// fields, degrade-boundary non-leakage into user-stop/disconnect/managed
+// snapshots, extractVersionFromCommandLine literal scan, scanNpxCacheReadonly
+// mock layout + the READ-ONLY contract red line (no meta writes, before/after
+// tree snapshots), statusLine/tooltip assembly anchors (E-SIM-1 static
+// cross-check on out/extension.js), details-card rendering incl. the extVersion
+// channel + escapeAttr injection safety + the five-phase 插件版本 row, and the
+// PU-3④ baseline migration — the H1 "external never shows a big version"
+// negation is replaced by ADR-48's controlled-relaxation semantics). Two
+// hard-coded baselines moved in step (sanctioned): PU-9③d 0.1.17 → 0.1.18 and
+// PP-12-2③ launchInfo key set 17 → 20 (design §3.2 adds fields 18–20).
 import { createRequire } from 'node:module'
 import { spawn } from 'node:child_process'
 import * as fs from 'node:fs'
@@ -110,11 +122,11 @@ const {
 } = require('../out/instance.js')
 const { DshRuntime, portBindable, resolveLaunchPort } = require('../out/runtime.js')
 const DP = require('../out/dshProcess.js') // { DshProcess, resolvePortFromLog, probe, treeKill, STARTUP_TIMEOUT_MS, STARTUP_TIMEOUT_MS_START, STARTUP_TIMEOUT_MS_START_NPX, START_LAUNCH_STRATEGY, START_LAUNCHER_LABEL, START_WINDOW_TITLE, START_PAYLOAD_VARIANT, buildStartLaunchCommand, buildConhostLaunchArgv, wrapStartPayloadWithMarkers, markerPrefix, markerSuffix, buildNodeBinStartPayload, buildNpxArgs, buildNpxStartPayload, startPayloadForVariant, startBudgetMsFor, PROBE_POLL_MS, echoSafeText, consoleInfoHeader, withConsoleInfoHeader, judgeWindowSafeByVersion, WINDOWSAFE_MIN_VERSION, WINDOWSAFE_REGRESSION_MIN_VERSION }
-const Resolver = require('../out/dshResolver.js') // { resolveNodeAndNpm, resolveDshBin, DSH_PKG, ... }
+const Resolver = require('../out/dshResolver.js') // { resolveNodeAndNpm, resolveDshBin, scanNpxCacheReadonly, DSH_PKG, ... }
 const PATH = require('../out/paths.js') // { LOOPBACK_HOST, rotateDshLogs, MARKER_SUFFIX_CMD_START, MARKER_SUFFIX_NODE_START, MARKER_SUFFIX_NODE_EXIT, dshLogMarkerFile, ... }
 const { LOOPBACK_HOST } = PATH
 const { buildPanelHtml, buildDetailsHtml, escapeAttr } = require('../out/webviewHtml.js')
-const LI = require('../out/launchInfo.js') // { buildLaunchInfo, parseSelfVersion, statusLine, EXTERNAL_CMDLINE_MAX }
+const LI = require('../out/launchInfo.js') // { buildLaunchInfo, parseSelfVersion, statusLine, EXTERNAL_CMDLINE_MAX, extractVersionFromCommandLine, buildExternalVersionNote, EXTERNAL_VERSION_NOTE_CMDLINE, EXTERNAL_VERSION_MISMATCH_WARNING, formatLocalTimestamp }
 const cp = require('node:child_process')
 const { EventEmitter } = require('node:events')
 
@@ -1787,9 +1799,16 @@ async function main() {
     check('PU-3③ available fields retained (port/pid/managedBy/startedAt/lastCheckAt)', infoExt.port === 3080 && infoExt.pid === 555 &&
       infoExt.managedBy === 'external' && infoExt.startedAt === '2026-08-31T12:00:00.000Z' && infoExt.lastCheckAt === '2026-08-31T12:00:00.000Z')
     const htmlExt = buildDetailsHtml(infoExt, 'ready')
-    check('PU-3④ external card: 外部接管 bar + mono command line, NO 复制路径/打开目录, NO big version', htmlExt.includes('外部接管') &&
-      htmlExt.includes(infoExt.externalCommandLine) && !htmlExt.includes('复制路径') && !htmlExt.includes('打开目录') &&
-      !htmlExt.includes('id="version-big"'))
+    // PU-13-7 (0.1.18, QA r1 A6-2 处置): the literal `!includes id="version-big"`
+    // clause protected the H1 baseline "external card NEVER shows a big version",
+    // which ADR-48's controlled relaxation REVERSES — the否定断言 moved out of the
+    // unconditional form; ①外部接管 bar / mono command line / 无复制路径 / 无打开目录
+    // assertions retained verbatim, ②the version-big negation is gone, ③the new
+    // honest-degradation semantics live right below (PU-3④b) and in PU-13-7.
+    check('PU-3④ external card: 外部接管 bar + mono command line, NO 复制路径/打开目录 (version-big negation migrated to PU-13-7 per ADR-48)', htmlExt.includes('外部接管') &&
+      htmlExt.includes(infoExt.externalCommandLine) && !htmlExt.includes('复制路径') && !htmlExt.includes('打开目录'))
+    check('PU-3④b external card honest version section (PU-13-7③ new semantics): muted 版本未知 + zero concrete version literal (decoys stay dropped)', htmlExt.includes('版本未知（本次会话未能确定）') &&
+      !htmlExt.includes('id="version-big"') && !htmlExt.includes('9.9.9') && !htmlExt.includes('SHOULD-BE-DROPPED'))
 
     // ---- PU-4: template contract (CSP / copy reversibility / anchors / injection) ----
     px('PU-4 buildDetailsHtml contract: CSP, copy reversibility, Chinese anchors, injection safety')
@@ -3534,7 +3553,7 @@ async function main() {
     check('PU-9③c dsh.chooseChannel 命令注册 + activationEvents（QuickPick 重入口可达）',
       Array.isArray(pkgSim.contributes.commands) && pkgSim.contributes.commands.some((c) => c.command === 'dsh.chooseChannel') &&
       Array.isArray(pkgSim.activationEvents) && pkgSim.activationEvents.includes('onCommand:dsh.chooseChannel'))
-    check('PU-9③d 版本 0.1.17（发布单点）', pkgSim.version === '0.1.17')
+    check('PU-9③d 版本 0.1.18（发布单点；0.1.18 轮 package.json 随设计 §九 #6 递增，基线对齐）', pkgSim.version === '0.1.18')
     check('PU-9④ 回归聚合检查：PU-1..8 + PP-8 全族此前没有失败', failures === 0)
 
     // ==================== 0.1.15 additions (#88/#92, design §8.1/§8.2/§8.1b) ==
@@ -4128,9 +4147,10 @@ async function main() {
         info17.processStartedAt === '2026-09-01T12:30:33.000Z')
       const info17b = LI.buildLaunchInfo({ rec: { pid: mockPid, port: MOCK_PORT, managedBy: 'managed-own', startedAt: '2026-09-02T01:00:00.000Z' } })
       check('PP-12-2② rec 无字段 → null（旧 registry 容忍面）', info17b.processStartedAt === null)
-      check('PP-12-2③ 既有 16 字段键没有回归 + 新增第 17 键（键集恰 17）',
-        ['dshVersion', 'resolverVersion', 'versionCrossCheck', 'binDir', 'dshBin', 'channel', 'resolverMode', 'lastCheckAt', 'launchMode', 'port', 'pid', 'managedBy', 'startedAt', 'logFiles', 'externalCommandLine', 'externalUrl'].every((k) => k in info17) &&
-        Object.keys(info17).length === 17)
+      check('PP-12-2③ 既有 17 字段键没有回归 + 新增第 18–20 键（键集恰 20；0.1.18 ADR-48 external 三字段，managed 快照恒 null）',
+        ['dshVersion', 'resolverVersion', 'versionCrossCheck', 'binDir', 'dshBin', 'channel', 'resolverMode', 'lastCheckAt', 'launchMode', 'port', 'pid', 'managedBy', 'startedAt', 'logFiles', 'externalCommandLine', 'externalUrl', 'processStartedAt'].every((k) => k in info17) &&
+        ['externalDshVersion', 'externalDshVersionNote', 'externalCmdlineVersion'].every((k) => k in info17 && info17[k] === null) &&
+        Object.keys(info17).length === 20)
 
       // ---- PP-12-3: queryProcessStartTimeSync 注入面（G3，PI-3 同型）---------
       const isoOK = '2026-09-01T12:30:33.123Z'
@@ -4257,6 +4277,241 @@ async function main() {
         logs17.every((s) => dpSrc17.split(s).length === 2))
       check("PP-13-2③ unknown 静默跳过留痕：守卫块内 'unknown' → silent skip（安全侧：不告警不承诺）",
         dpSrc17.slice(guardIdx17, endIdx17).includes("windowSafe === 'unknown'"))
+    }
+
+    // ==================== 0.1.18 additions (design §10.1, ADR-48) =============
+    // PU-13 external 版本族（判据来源：docs/0.1.18设计方案-外部接管状态显示dsh版本
+    // 与插件版本.md v1.1 §10.1 PU-13-1..7 + §3.4 精确文案 + §7.1 函数契约 + §7.2
+    // 降级矩阵）。手法：
+    //  - 纯函数直测（PU-1..8 先例）：buildLaunchInfo 五象限/degrade 边界、
+    //    extractVersionFromCommandLine / buildExternalVersionNote、statusLine、
+    //    buildDetailsHtml（含 escapeAttr 注入安全，PU-4 同法）；
+    //  - mock 布局直测（PV-3 先例）：scanNpxCacheReadonly 经 DSH_NPX_ROOT seam +
+    //    makeCandidate 同构布局；只读契约红线（R3）= 调用前后目录树快照对比；
+    //  - 编译产物静态交叉一致性（E-SIM-1/PP-13-2 先例）：out/extension.js 的状态栏
+    //    候选链与 tooltip 装配点（statusLine 纯函数无感知，装配在调用方）。
+    px('PU-13 external 版本族（0.1.18 ADR-48：五象限装配 + degrade 边界 + 命令行提取 + 只读扫描 + UI 装配 + PU-3④ 基线迁移）')
+    {
+      const V_DIR = '0.1.5-alpha.1'
+      const V_CMD_ALT = '0.1.1-rc.2'
+      const extBase = {
+        managedBy: 'external', rec: { pid: 555, port: 3080, managedBy: 'external', startedAt: '2026-09-09T08:00:00.000Z' },
+        port: 3080, pid: 555, channel: 'latest',
+      }
+
+      // ---- PU-13-1: external 装配五象限（§7.2 矩阵第 1–3 行）-------------------
+      px('PU-13-1 external 装配五象限（目录/命令行双源组合；三新字段就位形态）')
+      const q1 = LI.buildLaunchInfo({ ...extBase,
+        externalDshVersion: V_DIR, externalCmdlineVersion: V_DIR,
+        externalDshVersionNote: 'npx 缓存存在 4 个版本（显示最新，未核实运行进程）' })
+      check('PU-13-1① 目录+命令行同版：双值就位 + Note=多候选文案（§7.1 单点输出，candidateCount=4 变体）',
+        q1.externalDshVersion === V_DIR && q1.externalCmdlineVersion === V_DIR &&
+        q1.externalDshVersionNote === 'npx 缓存存在 4 个版本（显示最新，未核实运行进程）')
+      const q2 = LI.buildLaunchInfo({ ...extBase,
+        externalDshVersion: V_DIR, externalCmdlineVersion: V_CMD_ALT,
+        externalDshVersionNote: '据 npx 缓存目录（未核实运行进程）' })
+      check('PU-13-1② 目录+命令行异版：双值均透传（警示对账输入就位，两值不等供 UI 对账）+ Note=单候选文案',
+        q2.externalDshVersion === V_DIR && q2.externalCmdlineVersion === V_CMD_ALT &&
+        q2.externalDshVersion !== q2.externalCmdlineVersion &&
+        q2.externalDshVersionNote === '据 npx 缓存目录（未核实运行进程）')
+      const q3 = LI.buildLaunchInfo({ ...extBase, externalDshVersion: V_DIR, externalDshVersionNote: '据 npx 缓存目录（未核实运行进程）' })
+      check('PU-13-1③ 仅目录：目录版本+Note 就位、externalCmdlineVersion=null（无命令行源不臆造）',
+        q3.externalDshVersion === V_DIR && q3.externalDshVersionNote === '据 npx 缓存目录（未核实运行进程）' && q3.externalCmdlineVersion === null)
+      const q4 = LI.buildLaunchInfo({ ...extBase })
+      check('PU-13-1④ 双缺：三字段全 null（诚实降级，无占位值——§7.2「无候选/扫描失败」行）',
+        q4.externalDshVersion === null && q4.externalDshVersionNote === null && q4.externalCmdlineVersion === null)
+      const q5 = LI.buildLaunchInfo({ ...extBase, externalCmdlineVersion: V_DIR })
+      check('PU-13-1⑤ 仅命令行（QA r1 A6-1 补，矩阵第 3 行「视命令行」）：externalCmdlineVersion 命中、目录版本与 Note=null',
+        q5.externalCmdlineVersion === V_DIR && q5.externalDshVersion === null && q5.externalDshVersionNote === null)
+
+      // ---- PU-13-2: degrade 边界（§7.2 矩阵第 4–5 行：放宽不外溢）--------------
+      px('PU-13-2 degrade 边界（external 新字段透传但 managed 字段恒 null；user-stop/disconnect/managed 快照不外溢）')
+      const dExt = LI.buildLaunchInfo({ ...extBase,
+        selfVersion: '9.9.9', resolved: { version: '9.9.9', dir: 'SHOULD-BE-DROPPED', binJs: 'B', mode: 'steady' },
+        externalUrl: 'http://127.0.0.1:1/?token=x',
+        externalDshVersion: V_DIR, externalDshVersionNote: 'note-in', externalCmdlineVersion: V_CMD_ALT })
+      check('PU-13-2① external 态：三新字段透传 + managed 语义字段（dshVersion/resolverVersion/binDir/dshBin/resolverMode/externalUrl）恒 null + crossCheck unknown（PU-3 基线不破）',
+        dExt.externalDshVersion === V_DIR && dExt.externalDshVersionNote === 'note-in' && dExt.externalCmdlineVersion === V_CMD_ALT &&
+        dExt.dshVersion === null && dExt.resolverVersion === null && dExt.binDir === null && dExt.dshBin === null &&
+        dExt.resolverMode === null && dExt.externalUrl === null && dExt.versionCrossCheck === 'unknown')
+      const dStop = LI.buildLaunchInfo({ ...extBase, degraded: true, degradedLaunchMode: 'start',
+        externalDshVersion: V_DIR, externalDshVersionNote: 'note-in', externalCmdlineVersion: V_CMD_ALT })
+      const dDisc = LI.buildLaunchInfo({ ...extBase, degraded: true, degradedLaunchMode: null,
+        externalDshVersion: V_DIR, externalDshVersionNote: 'note-in', externalCmdlineVersion: V_CMD_ALT })
+      check('PU-13-2② user-stop/disconnect 快照（含 external 会话中途形态，§7.2 第 4 行）：三新字段恒 null（显式输入亦被把关——放宽不外溢）',
+        [dStop, dDisc].every((d) => d.externalDshVersion === null && d.externalDshVersionNote === null && d.externalCmdlineVersion === null))
+      const dManaged = LI.buildLaunchInfo({ channel: 'latest', managedBy: 'managed-own', selfVersion: '0.1.1-rc.2',
+        externalDshVersion: V_DIR, externalDshVersionNote: 'note-in', externalCmdlineVersion: V_CMD_ALT })
+      check('PU-13-2③ managed-own：三新字段恒 null（显式输入亦不透传——语义分离，external 版本绝不混入 managed 快照）',
+        dManaged.externalDshVersion === null && dManaged.externalDshVersionNote === null && dManaged.externalCmdlineVersion === null &&
+        dManaged.dshVersion === '0.1.1-rc.2' && dManaged.versionCrossCheck === 'self-only')
+
+      // ---- PU-13-3: extractVersionFromCommandLine（§7.1 字面扫描契约）----------
+      px('PU-13-3 extractVersionFromCommandLine（字面扫描；不推断 npx 的解析结果）')
+      check('PU-13-3① 无版本形态 → null：npx @deepseek-ai/dsh web',
+        LI.extractVersionFromCommandLine('npx @deepseek-ai/dsh web') === null)
+      check('PU-13-3② 精确 spec 命中：npx @deepseek-ai/dsh@0.1.5-alpha.1 web → 0.1.5-alpha.1',
+        LI.extractVersionFromCommandLine('npx @deepseek-ai/dsh@0.1.5-alpha.1 web') === '0.1.5-alpha.1')
+      check('PU-13-3③ node bin.js 直启（命令行无版本 token）→ null',
+        LI.extractVersionFromCommandLine('node C:\\x\\lib\\bin.js web --port 3080') === null)
+      check('PU-13-3④ v 前缀剥除：v1.2.3-rc.1 → 1.2.3-rc.1（@spec 与独立 token 两形态）',
+        LI.extractVersionFromCommandLine('npx @deepseek-ai/dsh@v1.2.3-rc.1 web') === '1.2.3-rc.1' &&
+        LI.extractVersionFromCommandLine('node bin.js web --report v1.2.3-rc.1') === '1.2.3-rc.1')
+      check('PU-13-3⑤ 非法 token/噪声排除：非 semver spec / 四段点分 1.2.3.4 / 回环 IP 127.0.0.1 均 null（前后置边界）',
+        LI.extractVersionFromCommandLine('npx @deepseek-ai/dsh@not-a-version web') === null &&
+        LI.extractVersionFromCommandLine('npm exec something 1.2.3.4 --loglevel info') === null &&
+        LI.extractVersionFromCommandLine('node C:\\x\\bin.js web --host 127.0.0.1 --port 3080') === null)
+      check('PU-13-3⑥ 多 token 取首 + null/undefined/空串防御',
+        LI.extractVersionFromCommandLine('npx @deepseek-ai/dsh@0.1.1-rc.2 web # also dsh@0.1.5-alpha.1') === '0.1.1-rc.2' &&
+        LI.extractVersionFromCommandLine(null) === null && LI.extractVersionFromCommandLine(undefined) === null &&
+        LI.extractVersionFromCommandLine('') === null)
+      {
+        // 截断边界（EXTERNAL_CMDLINE_MAX=300）：截断只可能让 token 缺席（提不出），
+        // 不放大语义——同一命令行完整形态命中、截断形态提不出。
+        const truncCmd = 'node C:\\x\\bin.js web --port 3080 ' + 'y'.repeat(260) + ' @deepseek-ai/dsh@0.1.5-alpha.1'
+        const truncated = truncCmd.slice(0, LI.EXTERNAL_CMDLINE_MAX)
+        check('PU-13-3⑦ 截断边界：完整命令行命中 / 截至EXTERNAL_CMDLINE_MAX 后版本 token 越界缺席 → null（截断只减不增）',
+          truncCmd.length > LI.EXTERNAL_CMDLINE_MAX && !truncated.includes('0.1.5') &&
+          LI.extractVersionFromCommandLine(truncated) === null &&
+          LI.extractVersionFromCommandLine(truncCmd) === '0.1.5-alpha.1')
+      }
+      check('PU-13-3⑧ buildExternalVersionNote（§7.1 文案单点）：null→null / 1 候选→单候选文案 / >1→多候选变体（N 插值）',
+        LI.buildExternalVersionNote(null, 4) === null &&
+        LI.buildExternalVersionNote(V_DIR, 1) === '据 npx 缓存目录（未核实运行进程）' &&
+        LI.buildExternalVersionNote(V_DIR, 2) === 'npx 缓存存在 2 个版本（显示最新，未核实运行进程）' &&
+        LI.buildExternalVersionNote(V_DIR, 4) === 'npx 缓存存在 4 个版本（显示最新，未核实运行进程）')
+      check('PU-13-3⑨ 标注常量字面（文案单点地位，UI 层引用源）：据启动命令行 / 命令行与 npx 缓存目录版本不一致警示',
+        LI.EXTERNAL_VERSION_NOTE_CMDLINE === '据启动命令行' &&
+        LI.EXTERNAL_VERSION_MISMATCH_WARNING === '命令行与 npx 缓存目录版本不一致——以实际运行的 dsh 为准')
+
+      // ---- PU-13-4: scanNpxCacheReadonly（DSH_NPX_ROOT mock 布局 + 只读红线）---
+      px('PU-13-4 scanNpxCacheReadonly（mock 布局：newest 选取 / candidateCount / 坏包跳过 / bin.js 缺失仍报版本 / 只读契约红线 R3）')
+      const scanRo = () => Resolver.scanNpxCacheReadonly()
+      const npxReset = () => { fs.rmSync(simNpxRoot, { recursive: true, force: true }); fs.mkdirSync(simNpxRoot, { recursive: true }) }
+      const treeSnap = (root) => {
+        const out = []
+        const walk = (d) => {
+          for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+            const p = path.join(d, e.name)
+            if (e.isDirectory()) { out.push(`D ${p}`); walk(p) }
+            else out.push(`F ${p} ${fs.readFileSync(p, 'utf8')}`)
+          }
+        }
+        walk(root)
+        return out.join('\n')
+      }
+      const t13 = Date.now()
+      npxReset()
+      const dirSingle = makeCandidate(simNpxRoot, 'pu13-single', V_DIR, t13)
+      check('PU-13-4① 单候选 newest：version/dir/candidateCount=1（DSH_NPX_ROOT seam 生效）',
+        (() => { const s = scanRo(); return s !== null && s.version === V_DIR && s.dir === dirSingle && s.candidateCount === 1 })())
+      makeCandidate(simNpxRoot, 'pu13-old', '0.1.0-rc.7', t13 - 90_000)
+      makeCandidate(simNpxRoot, 'pu13-mid', '0.1.1-rc.2', t13 - 30_000)
+      check('PU-13-4② 多候选：newest=mtime 最新候选 + candidateCount=3（多候选是常态，newest 启发式）',
+        (() => { const s = scanRo(); return s !== null && s.version === V_DIR && s.dir === dirSingle && s.candidateCount === 3 })())
+      npxReset()
+      const dirGood = makeCandidate(simNpxRoot, 'pu13-good', '0.1.5-alpha.1', t13 - 10_000)
+      const dirBad = makeCandidate(simNpxRoot, 'pu13-bad', '9.9.9', t13)
+      fs.writeFileSync(path.join(dirBad, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'), '{ NOT JSON', 'utf8')
+      check('PU-13-4③ 坏 package.json 跳过：候选以 package.json name+version 内容匹配为准，坏包不入集',
+        (() => { const s = scanRo(); return s !== null && s.version === '0.1.5-alpha.1' && s.dir === dirGood && s.candidateCount === 1 })())
+      const dirNoBin = makeCandidate(simNpxRoot, 'pu13-nobin', '0.1.5-alpha.1', t13 + 10_000)
+      fs.rmSync(path.join(dirNoBin, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'))
+      check('PU-13-4④ bin.js 缺失仍报版本（只读扫描刻意不引入 resolver 的 binJs 完整性语义）',
+        (() => { const s = scanRo(); return s !== null && s.version === '0.1.5-alpha.1' && s.dir === dirNoBin && s.candidateCount === 2 })())
+      npxReset()
+      check('PU-13-4⑤ 无候选 → null（诚实降级，调用方透传 null）', scanRo() === null)
+      {
+        // 只读契约红线（R3）：调用前后 npx 缓存树 + runtime-meta 目录快照逐位一致
+        // ——不写 meta 文件、不产生任何文件。
+        makeCandidate(simNpxRoot, 'pu13-ro', V_DIR, Date.now())
+        const npxBefore = treeSnap(simNpxRoot)
+        const metaDir13 = path.join(dataDir, 'dsh-runtime-meta')
+        const metaBefore = fs.existsSync(metaDir13) ? treeSnap(metaDir13) : null
+        scanRo()
+        check('PU-13-4⑥ 契约红线（R3）：调用前后 npx 缓存树与 runtime-meta 快照逐位一致（不写 meta、不产生任何文件）',
+          npxBefore === treeSnap(simNpxRoot) &&
+          metaBefore === (fs.existsSync(metaDir13) ? treeSnap(metaDir13) : null))
+        check('PU-13-4⑦ 返回形态自洽：{version, dir, candidateCount} 且 dir 指向 DSH_NPX_ROOT 内候选',
+          (() => { const s = scanRo(); return s !== null && s.version === V_DIR && s.candidateCount === 1 && s.dir.startsWith(simNpxRoot) })())
+      }
+
+      // ---- PU-13-5: statusLine/tooltip 装配（external 候选链尾追加；managed 不变）
+      px('PU-13-5 statusLine/tooltip 装配（external 版本段 + managed 候选链回归不变 + out/extension.js 静态锚）')
+      check('PU-13-5① external 仅目录版本 → 状态栏文本含 · v0.1.5-alpha.1（statusLine 纯函数规则不变，版本值由调用方候选链决定，§3.4 落点 1）',
+        LI.statusLine('ready', 3080, V_DIR) === '$(circle-filled) DSH 3080 · v0.1.5-alpha.1')
+      check('PU-13-5② 双缺 → 无版本段（无占位，H1 诚实基线延续）',
+        LI.statusLine('ready', 3080, null) === '$(circle-filled) DSH 3080')
+      check('PU-13-5③ managed 快照候选链回归不变：自报值仍在候选链首位、三新字段 null',
+        (() => { const i = LI.buildLaunchInfo({ channel: 'latest', managedBy: 'managed-own', selfVersion: '0.1.1-rc.2' })
+          return i.dshVersion === '0.1.1-rc.2' && i.resolverVersion === null &&
+            i.externalDshVersion === null && i.externalDshVersionNote === null && i.externalCmdlineVersion === null })())
+      {
+        const extSrc = fs.readFileSync(path.join(process.cwd(), 'out', 'extension.js'), 'utf8')
+        check('PU-13-5④ 候选链装配静态锚（E-SIM-1 先例）：managed 链在前 + external 态尾追加（目录版本→命令行版本）+ managedBy 守卫',
+          extSrc.includes('info?.dshVersion ?? info?.resolverVersion') &&
+          extSrc.includes('info.externalDshVersion ?? info.externalCmdlineVersion ?? null') &&
+          extSrc.includes("info?.managedBy === 'external'"))
+        check('PU-13-5⑤ tooltip 装配静态锚：版本行模板引用快照 note 字段与文案单点常量（tooltip 层零就地标注字面，QA r1 A5）+ 恒有插件行 + managed 态版本行逐字不变',
+          extSrc.includes('版本：v${info.externalDshVersion} · ${info.externalDshVersionNote}') &&
+          extSrc.includes('EXTERNAL_VERSION_NOTE_CMDLINE') && extSrc.includes('EXTERNAL_VERSION_MISMATCH_WARNING') &&
+          extSrc.includes("插件：v${extVersion ?? '未知'}") &&
+          extSrc.includes('版本：v${info.dshVersion}（自报）') && extSrc.includes('版本：v${info.resolverVersion}（bin 目录）'))
+      }
+
+      // ---- PU-13-6: 详情卡渲染（external 版本区 + 注入安全 + 插件版本行五相位）--
+      px('PU-13-6 详情卡渲染（external 版本区四形态 + escapeAttr 注入安全 + 插件版本行五相位 + managed 回归）')
+      const extReadyDir = LI.buildLaunchInfo({ ...extBase, externalCommandLine: 'npx @deepseek-ai/dsh web --port 3080',
+        externalDshVersion: V_DIR, externalDshVersionNote: 'npx 缓存存在 4 个版本（显示最新，未核实运行进程）' })
+      const hDir6 = buildDetailsHtml(extReadyDir, 'ready', { extVersion: '0.1.18' })
+      check('PU-13-6① 仅目录版本卡：version-big 大字 + amber「版本为间接来源（见标注）」+ 多候选标注（§7.1 单点输出经快照 note 字段）',
+        hDir6.includes('id="version-big"') && hDir6.includes(`>v${V_DIR}<`) &&
+        hDir6.includes('版本为间接来源（见标注）') &&
+        hDir6.includes('npx 缓存存在 4 个版本（显示最新，未核实运行进程）'))
+      const extMix6 = LI.buildLaunchInfo({ ...extBase, externalDshVersion: V_DIR, externalDshVersionNote: '据 npx 缓存目录（未核实运行进程）', externalCmdlineVersion: V_CMD_ALT })
+      const hMix6 = buildDetailsHtml(extMix6, 'ready', {})
+      check('PU-13-6② 目录+命令行异版卡：并存行「启动命令行含版本 v…」+ 不一致警示行（复用 .xcheck.warn + 文案单点常量）',
+        hMix6.includes(`启动命令行含版本 v${V_CMD_ALT}`) && hMix6.includes(LI.EXTERNAL_VERSION_MISMATCH_WARNING) &&
+        hMix6.includes('xcheck warn'))
+      const extCmd6 = LI.buildLaunchInfo({ ...extBase, externalCmdlineVersion: V_DIR })
+      const hCmd6 = buildDetailsHtml(extCmd6, 'ready', {})
+      check('PU-13-6③ 仅命令行象限卡（矩阵第 3 行）：version-big=命令行版本 + 标注=据启动命令行（标注常量，非目录标注）',
+        hCmd6.includes('id="version-big"') && hCmd6.includes(`>v${V_DIR}<`) &&
+        hCmd6.includes(LI.EXTERNAL_VERSION_NOTE_CMDLINE) && !hCmd6.includes('据 npx 缓存目录'))
+      const extEvil6 = LI.buildLaunchInfo({ ...extBase, externalDshVersion: '<script>alert(1)</script>', externalDshVersionNote: '"><img src=x onerror=alert(1)>' })
+      const hEvil6 = buildDetailsHtml(extEvil6, 'ready', {})
+      check('PU-13-6④ 注入安全（PU-4 同法）：版本值与标注均经 escapeAttr 转义，文档结构完好',
+        !hEvil6.includes('<script>alert(1)') && hEvil6.includes('&lt;script&gt;alert(1)&lt;/script&gt;') &&
+        !hEvil6.includes('onerror=alert(1)>') && hEvil6.startsWith('<!DOCTYPE html>'))
+      const kvPlug = (v) => `<span class="k">插件版本</span><span class="v">${v}</span>`
+      const managedReady6 = LI.buildLaunchInfo({ channel: 'latest', managedBy: 'managed-own', selfVersion: '0.1.1-rc.2' })
+      const managedStop6 = LI.buildLaunchInfo({ degraded: true, degradedLaunchMode: 'start', managedBy: 'managed-own', port: 3080, pid: 19441,
+        rec: { pid: 19441, port: 3080, managedBy: 'managed-own', startedAt: '2026-09-09T08:00:00.000Z', launchMode: 'start' } })
+      check('PU-13-6⑤ 插件版本行五相位：empty / error / ready(external) / ready(managed) / stopped 全显示 v0.1.18（§3.4 落点 3）',
+        buildDetailsHtml(null, 'empty', { extVersion: '0.1.18' }).includes(kvPlug('v0.1.18')) &&
+        buildDetailsHtml(null, 'error', { errorMessage: 'boom', extVersion: '0.1.18' }).includes(kvPlug('v0.1.18')) &&
+        hDir6.includes(kvPlug('v0.1.18')) &&
+        buildDetailsHtml(managedReady6, 'ready', { extVersion: '0.1.18' }).includes(kvPlug('v0.1.18')) &&
+        buildDetailsHtml(managedStop6, 'stopped', { extVersion: '0.1.18' }).includes(kvPlug('v0.1.18')))
+      check('PU-13-6⑥ extVersion=null → 「未知」（诚实降级，插件版本不臆造）',
+        buildDetailsHtml(null, 'empty', {}).includes(kvPlug('未知')))
+      check('PU-13-6⑦ managed ready 卡回归：version-big/版本区/bin 目录区块不变，新增插件版本行不挤占既有区块（PU-4 基线延续）',
+        (() => { const h = buildDetailsHtml(managedReady6, 'ready', { extVersion: '0.1.18' })
+          return h.includes('id="version-big"') && h.includes('>v0.1.1-rc.2<') && h.includes('bin 目录') && h.includes(kvPlug('v0.1.18')) })())
+
+      // ---- PU-13-7: PU-3④ 基线迁移对账（QA r1 A6-2）---------------------------
+      // H1 基线「external 卡永不显示版本大字」（原 PU-3④ 的 version-big 字面否定
+      // 断言）已被 ADR-48 受控放宽推翻：原断言在 PU-3④ 处按 ①保留/②删去 迁移，
+      // 新诚实降级语义见 PU-3④b；本条补对照——同型输入携带目录版本时的合法形态。
+      px('PU-13-7 PU-3④ 基线迁移对账（H1「永不显示版本大字」→ ADR-48 受控放宽；PU-3④b 承接诚实降级，本条承接版本显示形态）')
+      const q7 = LI.buildLaunchInfo({ ...extBase, externalDshVersion: V_DIR, externalDshVersionNote: '据 npx 缓存目录（未核实运行进程）' })
+      const h7 = buildDetailsHtml(q7, 'ready', {})
+      check('PU-13-7① 含目录版本输入 → version-big 渲染版本值 + note 标注（ADR-48 受控放宽后的合法形态）',
+        h7.includes('id="version-big"') && h7.includes(`>v${V_DIR}<`) && h7.includes('据 npx 缓存目录（未核实运行进程）'))
+      check('PU-13-7② 诚实性红线：version-big 大字之后必有来源标注行（每个版本值带标注，无裸版本大字）',
+        (() => { const m = h7.match(/id="version-big">([^<]*)<\/div>\s*<div class="muted">([^<]*)<\/div>/)
+          return m !== null && m[1] === `v${V_DIR}` && m[2].length > 0 })())
+      check('PU-13⑧ 族内零回归标记：PU-13-1..7 此前没有失败（家族回归检查，PU-7/PP-2-8 先例同型）', failures === 0)
     }
 
     // -- 0.1.14 组清理：关闭 in-process 上游 ----------------------------------
