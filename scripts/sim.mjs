@@ -2984,11 +2984,11 @@ async function main() {
       typeof fullInner74 === 'string' && fullInner74.length > 0 && fullInner74.length < 8191)
 
     // ---- PP-7-5: marker / F-PORT 家族回归 + 全族聚合 ----
-    px('PP-7-5 marker/F-PORT 家族回归：尾锚提取不受头前缀影响 / 信息头段无 --port / marker 家族复合载荷下原样 / 聚合门全绿')
+    px('PP-7-5 marker/F-PORT 家族回归：尾锚提取不受头前缀影响 / 信息头段无 --port / marker 家族复合载荷下原样 / 聚合检查全绿')
     check('PP-7-5① 复合串尾锚 = >> "LOG" 2>&1（writeBanner/resolvePortFromLog 尾锚数据源不受信息头前缀影响）+ 信息头段无 --port 字样（载荷端口提取不受扰）',
       peeled72 !== null && peeled72.payload.endsWith(`>> "${info72.logFile}" 2>&1`) &&
       specInfoHeader(info72.logFile).split(' & ').every((seg) => !seg.includes('--port')))
-    check('PP-7-5② marker 家族（PP-4-1/PP-4-2）在复合载荷下原样 PASS + 聚合门 PP-2-8/PU-7/PP-3-5④/PP-4-5/PP-5-4④/PP-6-5 全绿（本块之前零失败）',
+    check('PP-7-5② marker 家族（PP-4-1/PP-4-2）在复合载荷下原样 PASS + 聚合检查 PP-2-8/PU-7/PP-3-5④/PP-4-5/PP-5-4④/PP-6-5 全绿（本块之前零失败）',
       failures === 0)
 
     globalThis.fetch = origFetch7
@@ -3217,7 +3217,7 @@ async function main() {
       typeof echoJson82.cookie === 'string' && echoJson82.cookie.split(';').map((s) => s.trim()).includes(issued82))
     check('PP-8-2①d sec-fetch-site 透传（R8）：原样到达上游', echoJson82.secFetchSite === 'same-origin')
     const ctrl82a = await reqVia(up.port, { p: '/', headers: { host: `127.0.0.1:${up.port}`, origin: `http://127.0.0.1:${handle82.port}` } })
-    check('PP-8-2②a 对照组（上游语义钉入）：未重写 Origin（proxyPort 值）直发上游 → 403（不重写必 403，防门控逃逸）',
+    check('PP-8-2②a 对照组（上游语义钉入）：未重写 Origin（proxyPort 值）直发上游 → 403（不重写必 403，防止绕过检查）',
       ctrl82a.status === 403)
     const ctrl82b = await reqVia(up.port, { p: '/', headers: { host: `127.0.0.1:${up.port}` } })
     check('PP-8-2②b 次序断言：同 host、无 Origin、无 cookie → 401（fence 先于 cookie——rpc-host L95-98 同判）',
@@ -3389,8 +3389,8 @@ async function main() {
     check('PP-8-4⑤ registry 结构不扰：既有字段齐全（pid/port/managedBy/startedAt）',
       readInstance().dsh !== null && readInstance().dsh.port === up.port)
 
-    // ---- PP-8-5: 全族回归聚合门 ----------------------------------------------
-    px('PP-8-5 全族回归聚合门')
+    // ---- PP-8-5: 全族回归聚合检查 ----------------------------------------------
+    px('PP-8-5 全族回归聚合检查')
     check('PP-8-5 token 组（PP-8-1..4）与既有族（PV/PW/PI/PP-1..7/PU）此前零失败', failures === 0)
 
     // ---- PP-8-6: 版本阈值判定（判定表单测）-----------------------------------
@@ -3490,7 +3490,7 @@ async function main() {
       const res = await CS.runFirstLaunchChannelSelect(md.deps)
       const iW = md.calls.indexOf('writeChannel:alpha')
       const iS = md.calls.indexOf('writeChannelSelected:true')
-      check('PU-9②a 首启门触发：channelSelected=false → QuickPick → selected:true / cancelled:false / channel=alpha',
+      check('PU-9②a 首启检查点触发：channelSelected=false → QuickPick → selected:true / cancelled:false / channel=alpha',
         res.selected === true && res.cancelled === false && res.writeFailed === false && res.channel === 'alpha' && md.calls.includes('pick'))
       check('PU-9②b 先选择通道、后启动dsh顺序（mock 调用序可观察）：writeChannel 先于 writeChannelSelected，pick 先于二者，均先于返回',
         iW !== -1 && iS !== -1 && iW < iS && md.calls.indexOf('pick') < iW)
@@ -3505,7 +3505,7 @@ async function main() {
         res.selected === false && res.cancelled === false && !md.calls.includes('pick') && store.channel === 'latest')
       const mdF = makeChannelDeps({ store: { channel: 'next', selected: true }, pickResult: 'alpha' })
       const resF = await CS.runFirstLaunchChannelSelect(mdF.deps, { forcePick: true })
-      check('PU-9②e dsh.chooseChannel 重入口：forcePick 绕过首启门（重选生效）',
+      check('PU-9②e dsh.chooseChannel 重入口：forcePick 绕过首启检查点（重选生效）',
         resF.selected === true && resF.channel === 'alpha')
     }
     {
@@ -3535,10 +3535,10 @@ async function main() {
       Array.isArray(pkgSim.contributes.commands) && pkgSim.contributes.commands.some((c) => c.command === 'dsh.chooseChannel') &&
       Array.isArray(pkgSim.activationEvents) && pkgSim.activationEvents.includes('onCommand:dsh.chooseChannel'))
     check('PU-9③d 版本 0.1.17（发布单点）', pkgSim.version === '0.1.17')
-    check('PU-9④ 回归聚合门：PU-1..8 + PP-8 全族此前零失败', failures === 0)
+    check('PU-9④ 回归聚合检查：PU-1..8 + PP-8 全族此前零失败', failures === 0)
 
     // ==================== 0.1.15 additions (#88/#92, design §8.1/§8.2/§8.1b) ==
-    // PP-10（adopt 会话定案 / awaitingChannel / 切换器 / #87 门）、PU-10（静态）、
+    // PP-10（adopt 会话定案 / awaitingChannel / 切换器 / #87 检查）、PU-10（静态）、
     // PP-11（面板消息路由）、PU-11（静态）。判据来源：
     // docs/0.1.15修复设计-真机验收问题.md v1.5。手法：
     //  - runtime 行为断言 = start() step1 全链（registry adopt）真实驱动 + 实例
@@ -4092,9 +4092,9 @@ async function main() {
         routedNull11 === false && routedShape11 === false && hits11.length === 1)
     }
 
-    // ---- 0.1.15 新组聚合门 ----------------------------------------------------
-    px('0.1.15 新组聚合门（PP-10/PU-10/PP-11/PU-11 全组此前零失败，含既有族）')
-    check('#88/#92 聚合门：PP-10 + PU-10 + PP-11 + PU-11 与既有全族零失败', failures === 0)
+    // ---- 0.1.15 新组聚合检查 ----------------------------------------------------
+    px('0.1.15 新组聚合检查（PP-10/PU-10/PP-11/PU-11 全组此前零失败，含既有族）')
+    check('#88/#92 聚合检查：PP-10 + PU-10 + PP-11 + PU-11 与既有全族零失败', failures === 0)
 
     // ==================== 0.1.16 additions (#96/#97/#98, design §八/§九) ======
     // PP-12 进程启动时刻数据链（判据来源：docs/0.1.16修复设计-视图页签标题与
@@ -4199,19 +4199,19 @@ async function main() {
       r12b.dispose()
     }
 
-    // ---- 0.1.16 新组聚合门 ----------------------------------------------------
-    px('0.1.16 新组聚合门（PP-12/PU-12 全组此前零失败，含既有族）')
-    check('#93-#99 聚合门：PP-12 + PU-12 与既有全族零失败', failures === 0)
+    // ---- 0.1.16 新组聚合检查 ----------------------------------------------------
+    px('0.1.16 新组聚合检查（PP-12/PU-12 全组此前零失败，含既有族）')
+    check('#93-#99 聚合检查：PP-12 + PU-12 与既有全族零失败', failures === 0)
 
     // ==================== 0.1.17 additions (#1, design §九 #1/#4) ==============
-    // PP-13 WINDOWSAFE 三段门控阈值判定（判据来源：docs/0.1.17调研报告-dsh-0.1.3-
+    // PP-13 WINDOWSAFE 三段检查阈值判定（判据来源：docs/0.1.17调研报告-dsh-0.1.3-
     // alpha集成点复验与无常驻窗口.md §九 #4；ADR-46 版本区间语义）。手法：
     //  - PP-13-1 纯函数直测（PP-8-6① 先例同型：judgeWindowSafeByVersion +
     //    compareDshVersions 预发布感知比较器）；期望阈值一律取导出常量引用，
     //    版本字面仅作测试输入与 check 名称（唯一事实源，不重复硬编码）；
     //  - PP-13-2 编译产物静态交叉一致性（E-SIM-1 先例：out/dshProcess.js 中
     //    三段判定 rlog 仅由 consoleVisible=false 守卫块触达；unknown 静默跳过）。
-    px('PP-13 WINDOWSAFE 三段门控阈值（#1：judgeWindowSafeByVersion 区间判定纯函数直测 + 编译产物静态交叉一致性）')
+    px('PP-13 WINDOWSAFE 三段检查阈值（#1：judgeWindowSafeByVersion 区间判定纯函数直测 + 编译产物静态交叉一致性）')
     // ---- PP-13-1: 版本区间判定（ADR-46 三段区间） ------------------------------
     check('PP-13-1① 阈值常量单点：WINDOWSAFE_MIN_VERSION = 0.1.3-alpha.1 + WINDOWSAFE_REGRESSION_MIN_VERSION = 0.1.3-alpha.2（三方独立证据支撑的判定锚；TOKEN_AUTH_MIN_VERSION 同址同模式）',
       DP.WINDOWSAFE_MIN_VERSION === '0.1.3-alpha.1' && DP.WINDOWSAFE_REGRESSION_MIN_VERSION === '0.1.3-alpha.2')

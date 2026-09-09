@@ -484,7 +484,7 @@ export const WINDOWSAFE_MIN_VERSION = '0.1.3-alpha.1'
  * band. dsh ≥ 0.1.3-alpha.2 native runner reintroduced the upstream popup
  * flash (PR #2825; upstream master unfixed at the time of writing). 上界常量
  * 的改置由用户评审裁决：待上游修复版正式发布后，由用户评审决定上调（或按
- * 裁决移除门控）——开发侧不自作主张改置。Single-point constant (去硬编码).
+ * 裁决移除该检查）——开发侧不自作主张改置。Single-point constant (去硬编码).
  */
 export const WINDOWSAFE_REGRESSION_MIN_VERSION = '0.1.3-alpha.2'
 
