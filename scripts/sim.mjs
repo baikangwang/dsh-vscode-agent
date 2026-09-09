@@ -100,6 +100,22 @@
 // negation is replaced by ADR-48's controlled-relaxation semantics). Two
 // hard-coded baselines moved in step (sanctioned): PU-9③d 0.1.17 → 0.1.18 and
 // PP-12-2③ launchInfo key set 17 → 20 (design §3.2 adds fields 18–20).
+// 0.1.18 fix round (F1-F5, per docs/0.1.18问题分析 §5.1): F1 mock lifecycle
+// isolation (the multi-window kill path restores the mock right after the
+// block; P0-I-2/3 seeds its OWN live mock on 45680 so no block inherits a dead
+// mockPid), F2 port-holder probe moved BEFORE the last-window kill
+// (netstatUsable -> mockPortHeld with the double condition, SKIP notes
+// neutralized), F3 bottom-line 'error' listener on every newRuntime() +
+// runtimeErrors sink + key-block deltas + an end-of-run sweep (emit('error')
+// can no longer crash the whole process; unexpected entries surface as FAIL
+// context), F4 launch-class spawns are ALWAYS intercepted by the router (no
+// real-spawn passthrough for [bin.js,'web',...] without captureLaunch; mock
+// servers/victims keep using the imported spawn), F5 expected-port injection
+// via SIM_EXPECT_PORT_PP35 / SIM_EXPECT_PORT_PP63 with real bind probes
+// (SKIP only on EACCES/EADDRINUSE; the block then runs on a probed bindable
+// substitute port), plus bind-robust substitute ports for the F-UPDATE (3082)
+// and PP-6-4 (3133) launch seams (F4 acceptance: no attempt-level 90s waits
+// in drifted port environments; flagged for review per §十二风险 1).
 import { createRequire } from 'node:module'
 import { spawn } from 'node:child_process'
 import * as fs from 'node:fs'
@@ -189,7 +205,14 @@ function installSpawnRouter() {
       if (h !== null) return h(entry)
       return fakeChild({ pid: 5000 + state.calls.length, code: 1 })
     }
-    if (kind === 'launch' && state.captureLaunch) {
+    if (kind === 'launch') {
+      // F4 (0.1.18, headless 无真实启动原则): launch-class spawns are ALWAYS
+      // intercepted. captureLaunch only chooses between the block's onLaunch
+      // mock and the default fakeChild — the old passthrough here let direct
+      // launches ([bin.js, 'web', ...]) really spawn when a block forgot to
+      // enable captureLaunch (the P0-I-2/3 release-QA crash path). Real spawns
+      // remain reserved for mock servers / victims, which use the imported
+      // `spawn` directly and never reach this router.
       return state.onLaunch !== null ? state.onLaunch(entry) : fakeChild({ pid: state.launchPid, code: 0 })
     }
     return orig(exec, argv, opts)
@@ -356,15 +379,24 @@ function seedInst(inst) { writeInstance(inst) }
 function makeRecord(pid, port, managedBy) {
   return { pid, port, managedBy, startedAt: new Date().toISOString() }
 }
+// F3 (0.1.18): runtime error-event sink. Every DshRuntime created in this
+// suite gets a bottom-line 'error' listener: an emit('error') without any
+// listener crashes the whole process (ERR_UNHANDLED_ERROR — the 0.1.18
+// release-QA crash mechanism). Collected entries surface as assertion context
+// instead: key blocks check the delta (P0-I-2/3, F-UPDATE, PP-3-5) and an
+// end-of-run sweep fails on any entry outside the expected whitelist.
+const runtimeErrors = []
 function newRuntime(windowPid, overrides = {}) {
   // Default identityCheck = permissive keep-all: the fake window pids in the
   // legacy tests represent real VSCode extension hosts; PW-3 overrides this
   // seam to exercise the exthost/foreign/unknown branches (design §4.2.2).
-  return new DshRuntime({
+  const r = new DshRuntime({
     app: 'Sim', windowPid, port: 3080, channel: 'latest', command: '', dshHome: '',
     identityCheck: () => 'exthost',
     ...overrides,
   })
+  r.on('error', (msg) => { runtimeErrors.push({ windowPid, msg }) })
+  return r
 }
 function enableSpawnCapture() {
   const orig = cp.spawn
@@ -399,12 +431,57 @@ function waitPort(port, timeoutMs) {
   })
 }
 const MOCK_PORT = 45678
-const server = startMock(MOCK_PORT)
-const mockPid = server.pid
+// F1 (0.1.18): mutable — the multi-window block may kill this mock for real
+// (extension-managed last-window stop); it is restored right after that block.
+let server = startMock(MOCK_PORT)
+let mockPid = server.pid
 
-function netstatUsable() {
+// F2 (0.1.18): renamed from netstatUsable — semantic split. This is NOT a
+// "netstat availability" flag: it answers "can this environment adjudicate the
+// mock port holder right now" = the mock process is alive AND resolvePortPid
+// still maps MOCK_PORT to the mock pid. Call it BEFORE any
+// shutdownBookkeeping that may kill the mock: probing after the kill made a
+// successful kill read as "netstat unavailable" and masked the real kill path
+// as SKIP (root cause C of the 0.1.18 analysis).
+function mockPortHeld() {
   const holder = (() => { try { return resolvePortPid(MOCK_PORT) } catch { return null } })()
-  return holder !== null && holder.pid === mockPid
+  return isAlive(mockPid) && holder !== null && holder.pid === mockPid
+}
+
+// F5 (0.1.18): real bind probe for the port-injection seams. Returns
+// { ok: true } when the port can be bound on the loopback right now, else
+// { ok: false, code } with the actual bind error code. The SKIP decision must
+// key ONLY on EACCES / EADDRINUSE (QA hard constraint) — any other code
+// surfaces as-is instead of widening the SKIP condition.
+function probeBindErrorCode(port) {
+  return new Promise((resolve) => {
+    const s = net.createServer()
+    s.once('error', (e) => resolve({ ok: false, code: e && e.code ? e.code : 'UNKNOWN' }))
+    s.listen(port, '127.0.0.1', () => s.close(() => resolve({ ok: true, code: null })))
+  })
+}
+
+// F5 (0.1.18): ask the OS for a currently bindable port (substitute carrier so
+// that port-environment drift cannot push a block into the 90s-per-attempt
+// random-port banner wait — F4 acceptance: no attempt-level 90s waits).
+function findBindablePort() {
+  return new Promise((resolve) => {
+    const s = net.createServer()
+    s.once('error', () => resolve(null))
+    s.listen(0, '127.0.0.1', () => {
+      const p = s.address() && s.address().port
+      s.close(() => resolve(p))
+    })
+  })
+}
+
+// F5 (0.1.18): expected-port env injection (SIM_EXPECT_PORT_PP35/PP63).
+// Unset/empty/garbage falls back to the documented default (3118/3132).
+function envPort(name, fallback) {
+  const raw = process.env[name]
+  if (raw === undefined || raw === '') return fallback
+  const v = Number(raw)
+  return Number.isInteger(v) && v > 0 && v <= 65535 ? v : fallback
 }
 
 async function main() {
@@ -441,17 +518,32 @@ async function main() {
   check('closing non-last window does not stop dsh', stoppedByA === false && isAlive(mockPid))
   check('after A closes, one window remains', readInstance().windows.length === 1)
 
+  // F2 (0.1.18): probe BEFORE the kill. The old code probed after
+  // shutdownBookkeeping, so in an environment where the kill really fired the
+  // port had no holder anymore and a SUCCESSFUL kill was misread as "netstat
+  // unavailable" (root cause C) — the real kill path was masked as SKIP.
+  const mockPortHeldPre = mockPortHeld()
   const stoppedByB = runtimeB.shutdownBookkeeping()
   await new Promise((r) => setTimeout(r, 500))
-  const nsUsable = netstatUsable()
-  if (nsUsable) {
+  if (mockPortHeldPre) {
     check('closing last window stops dsh', stoppedByB === true && !isAlive(mockPid))
     check('registry dsh record cleared', readInstance().dsh === null)
   } else {
-    skip('closing last window stops dsh', 'netstat unavailable in sandbox; host safe-side bail')
-    skip('registry dsh record cleared', 'netstat unavailable; record kept because host did not kill')
+    skip('closing last window stops dsh', '宿主端口持有者校验不可用，无法裁决 last-window kill（记录保留是 safe-side 保护行为）')
+    skip('registry dsh record cleared', '宿主端口持有者校验不可用，无法裁决 dsh 记录清理（记录保留是 safe-side 保护行为）')
     check('shutdown no-throw bookkeeping ran', typeof stoppedByB === 'boolean')
-    check('environment note: netstat unusable', !nsUsable)
+    check('environment note: port-holder verification unavailable', !mockPortHeldPre)
+  }
+
+  // F1 (0.1.18): mock lifecycle isolation. The block above registers the mock
+  // as an extension-managed dsh, so closing the LAST window makes the product
+  // kill it for real (correct safe-side behavior). Later blocks must never
+  // inherit a dead mockPid: restore the mock here — only when it actually
+  // died (a safe-side bail leaves it alive; the port must NOT be rebound).
+  if (!isAlive(mockPid)) {
+    server = startMock(MOCK_PORT)
+    mockPid = server.pid
+    await waitPort(MOCK_PORT, 10_000)
   }
 
   // ============ P0-I additions (headless) =================================
@@ -474,23 +566,36 @@ async function main() {
   // --- P0-I-2 + P0-I-3: disconnect/reconnect never kill (adopted dsh) ----
   px('P0-I-2/3 disconnect/reconnect never kill')
   {
+    // F1 (0.1.18): this block seeds its OWN live mock (independent pid/port,
+    // 45680) so it never depends on the multi-window block's mock lifecycle
+    // above — the adoption path must see an alive external dsh regardless of
+    // what the earlier kill-path block did to MOCK_PORT.
+    const p023MockPort = 45680
+    const p023Mock = startMock(p023MockPort)
+    await waitPort(p023MockPort, 10_000)
+    const errMark023 = runtimeErrors.length // F3
     // start() step1 re-adopt the mock via registry (external)
-    seedInst({ dsh: makeRecord(mockPid, MOCK_PORT, 'external'), windows: [{ pid: 2001, app: 'Sim', startedAt: new Date().toISOString() }] })
-    const r = newRuntime(2001, { port: MOCK_PORT })
+    seedInst({ dsh: makeRecord(p023Mock.pid, p023MockPort, 'external'), windows: [{ pid: 2001, app: 'Sim', startedAt: new Date().toISOString() }] })
+    const r = newRuntime(2001, { port: p023MockPort })
     await r.start()
-    check('start() re-adopts external mock (state ready)', r.state === 'ready' && r.port === MOCK_PORT)
+    check('start() re-adopts external mock (state ready)', r.state === 'ready' && r.port === p023MockPort)
     const capture = { killed: null }
     const origKill = DP.treeKill
     DP.treeKill = (pid) => { capture.killed = pid }
     r.disconnect()
     await new Promise((res) => setTimeout(res, 200))
-    check('disconnect() keeps mock dsh alive (no kill)', isAlive(mockPid) && capture.killed === null)
+    check('disconnect() keeps mock dsh alive (no kill)', isAlive(p023Mock.pid) && capture.killed === null)
     check('disconnect() sets state stopped', r.state === 'stopped')
     await r.reconnect()
     await new Promise((res) => setTimeout(res, 200))
-    check('reconnect() re-adopts without killing mock', r.state === 'ready' && isAlive(mockPid) && capture.killed === null)
+    check('reconnect() re-adopts without killing mock', r.state === 'ready' && isAlive(p023Mock.pid) && capture.killed === null)
     DP.treeKill = origKill
     r.dispose()
+    // F3 收尾（关键块）：若上游走到 emit('error')，在这里转为带错误上下文的
+    // FAIL 断言，而不是无监听崩溃或静默
+    const errs023 = runtimeErrors.slice(errMark023)
+    check(`P0-I-2/3 收尾：无 runtime error 事件（F3 兜底${errs023.length ? `，捕获：${errs023.map((e) => String(e.msg)).join(' | ')}` : ''}）`, errs023.length === 0)
+    await killAndReap(p023Mock)
   }
 
   // --- P0-I-4: managed launch spawn argument assertion (mock spawn) ------
@@ -548,13 +653,29 @@ async function main() {
     check('F-UPDATE external: returns no-managed (manual-update hint), no kill', ext === 'no-managed' && killLog.length === 0 && isAlive(mockPid))
 
     // managed-own case: controlled kill + new managed launch
-    seedInst({ dsh: makeRecord(deadPid, 3082, 'managed-own'), windows: [{ pid: 2003, app: 'Sim', startedAt: new Date().toISOString() }] })
-    const rOwn = newRuntime(2003, { port: 3082 })
+    // 0.1.18 修复轮（端口绑定鲁棒；F4 验收「全卷不再出现 attempt 级 90 秒等待」）：
+    // 3082 在端口漂移时段可能 EADDRINUSE（QA run2/3 崩溃机制）——一旦不可绑定，
+    // fallback-random 路径会 6×90 秒后 emit('error')。本块断言只关心 treeKill
+    // 受控击杀 + 重启收敛 ready，与端口值无关，故不可绑定（仅认 EACCES/
+    // EADDRINUSE）时改用实测可绑定的替代端口运行，断言语义零改动；此为 F1-F5
+    // 范围外的同根因 sim 基础设施修复，按 §十二风险 1 提请评审点名。
+    let fupdatePort = 3082
+    const fuBind = await probeBindErrorCode(fupdatePort)
+    if (!fuBind.ok && (fuBind.code === 'EACCES' || fuBind.code === 'EADDRINUSE')) {
+      const sub = await findBindablePort()
+      if (sub !== null) fupdatePort = sub
+    }
+    seedInst({ dsh: makeRecord(deadPid, fupdatePort, 'managed-own'), windows: [{ pid: 2003, app: 'Sim', startedAt: new Date().toISOString() }] })
+    const rOwn = newRuntime(2003, { port: fupdatePort })
+    const errMarkFU = runtimeErrors.length // F3
     killLog.length = 0
     const rel = await rOwn.forceRelaunchManaged()
     check('F-UPDATE managed-own: controlled kill (treeKill) invoked', killLog.includes(deadPid))
     check('F-UPDATE managed-own: relaunched (new spawn) and returns relaunched', rel === 'relaunched')
     check('F-UPDATE managed-own: state ready after relaunch', rOwn.state === 'ready' && rOwn.managedBy === 'managed-own')
+    // F3 收尾（关键块）：启动耗尽等 emit('error') 在这里转为带上下文的 FAIL 断言
+    const errsFU = runtimeErrors.slice(errMarkFU)
+    check(`F-UPDATE 收尾：无 runtime error 事件（F3 兜底${errsFU.length ? `，捕获：${errsFU.map((e) => String(e.msg)).join(' | ')}` : ''}）`, errsFU.length === 0)
     rOwn.dispose(); rExt.dispose()
     globalThis.fetch = origFetch
     cp.spawn = origSpawn
@@ -606,7 +727,7 @@ async function main() {
     await new Promise((res) => setTimeout(res, 200))
     check('shutdown: external NOT killed and record preserved (pid alive)', stopped === false && isAlive(mockPid) && readInstance().dsh?.managedBy === 'external')
     // managed-own last-window real stop requires netstat -> SKIP in sandbox
-    if (netstatUsable()) {
+    if (mockPortHeld()) {
       check('shutdown: managed-own last window stops dsh', true) // covered above family; real path verified in normal terminal
     } else {
       skip('shutdown: managed-own last-window stop', 'needs netstat/taskkill; verify in normal terminal')
@@ -777,7 +898,7 @@ async function main() {
     if (holder !== null) {
       check('PV-3 registry dsh.pid === port holder pid (last-window gate holder===pid now reachable)', holder.pid === rec.pid)
     } else {
-      skip('PV-3 registry dsh.pid === port holder pid', 'netstat unavailable in sandbox; real-machine RW-2 covers')
+      skip('PV-3 registry dsh.pid === port holder pid', 'netstat-based port-holder query unavailable in this environment; real-machine RW-2 covers')
     }
     r.dispose()
     if (http3 !== null) {
@@ -977,10 +1098,10 @@ async function main() {
       DP.treeKill = (pid) => killed.push(pid) // mocked: PW-3/4 still need the mock server
       const stopped = r.shutdownBookkeeping()
       await sleep(200)
-      if (netstatUsable()) {
+      if (mockPortHeld()) {
         check('PW-2 dead window scrubbed before verdict -> last-window kill fired + record cleared', stopped === true && killed.includes(mockPid) && readInstance().dsh === null)
       } else {
-        skip('PW-2 dead window scrubbed before verdict -> last-window kill fired', 'netstat unavailable in sandbox (safe-side bail); real-machine RW-2 covers')
+        skip('PW-2 dead window scrubbed before verdict -> last-window kill fired', 'port-holder query (netstat) unavailable in this environment (safe-side bail); real-machine RW-2 covers')
         check('PW-2 T2 scrub ran (windows emptied) and verdict stayed safe-side', typeof stopped === 'boolean' && killed.length === 0 && readInstance().windows.length === 0)
       }
       DP.treeKill = origKill
@@ -1202,7 +1323,7 @@ async function main() {
   }
 
   // --- PI-3b: real PowerShell integration (CIM availability dependent) -----
-  px('PI-3b real PowerShell integration (skipped in sandbox: CIM denied)')
+  px('PI-3b real PowerShell integration (CIM availability dependent)')
   {
     const cimUsable = (() => {
       try {
@@ -1212,7 +1333,7 @@ async function main() {
       } catch { return false }
     })()
     if (!cimUsable) {
-      skip('PI-3b real query verdict integration', 'CIM denied in sandbox (0x80041003); real-machine RW/RI covers')
+      skip('PI-3b real query verdict integration', 'CIM denied in this environment (0x80041003); real-machine RW/RI covers')
     } else {
       let verdict = 'THREW'
       try { verdict = processIdentitySync(process.pid, 15_000) } catch { /* keep THREW */ }
@@ -2203,23 +2324,45 @@ async function main() {
 
       // ---- PP-3-5: launchInfo / details card zero impact + family marker --
       px('PP-3-5 launchInfo/详情卡没有影响：launcher 变体仅 rlog 留痕，launchMode 保持二值')
+      // F5（0.1.18）：期望端口经环境变量注入（SIM_EXPECT_PORT_PP35，缺省 3118），
+      // 块开始时对期望端口做真实绑定测试；不可绑定（仅认 EACCES/EADDRINUSE）时
+      // 端口断言①显式 SKIP（文案含「端口环境不满足」+ 错误码），块本身改用实测
+      // 可绑定的替代端口运行——②③④ 的非端口断言语义保持完整，也避免端口漂移
+      // 时段滑入 fallback-random 的 90 秒/次等待（F4 验收）。可绑定时按原断言执行。
+      const expectPort35 = envPort('SIM_EXPECT_PORT_PP35', 3118)
+      const bind35 = await probeBindErrorCode(expectPort35)
+      const portEnvSkip35 = !bind35.ok && (bind35.code === 'EACCES' || bind35.code === 'EADDRINUSE')
+      let runPort35 = expectPort35
+      if (portEnvSkip35) {
+        const sub35 = await findBindablePort()
+        if (sub35 !== null) runPort35 = sub35 // 极端环境（无任何可绑端口）则按原端口运行，由 F3/断言如实暴露
+      }
       globalThis.fetch = step2FailPP3()
       seedInst({ dsh: null, windows: [] })
       releaseStartupLock()
       router.onLaunch = () => waitChild({ pid: 4740 }) // healthy /wait holder
-      const r35 = newRuntime(process.pid, { port: 3118, consoleVisible: true, resolvePortPidFn: holderFnPP3 })
+      const errMark35 = runtimeErrors.length // F3
+      const r35 = newRuntime(process.pid, { port: runPort35, consoleVisible: true, resolvePortPidFn: holderFnPP3 })
       const off35 = rlogOffset()
       await r35.start()
       const snap35 = r35.getLaunchInfo()
       const html35 = snap35 !== null ? buildDetailsHtml(snap35, 'ready') : ''
-      check('PP-3-5① start(/wait) 成功路径 launchInfo 完整且 launchMode=start（launcher 变体不经 launchInfo 透出，15 字段零改动）',
-        snap35 !== null && snap35.launchMode === 'start' && !('launcher' in snap35) &&
-        snap35.binDir !== null && snap35.dshBin !== null && snap35.port === 3118 && snap35.pid === holderPid3)
+      if (portEnvSkip35) {
+        skip('PP-3-5① start(/wait) 成功路径 launchInfo 完整且 launchMode=start（launcher 变体不经 launchInfo 透出，15 字段零改动）',
+          `端口环境不满足（期望端口 ${expectPort35} 当前不可绑定：${bind35.code}）`)
+      } else {
+        check('PP-3-5① start(/wait) 成功路径 launchInfo 完整且 launchMode=start（launcher 变体不经 launchInfo 透出，15 字段零改动）',
+          snap35 !== null && snap35.launchMode === 'start' && !('launcher' in snap35) &&
+          snap35.binDir !== null && snap35.dshBin !== null && snap35.port === expectPort35 && snap35.pid === holderPid3)
+      }
       check('PP-3-5② 详情卡没有影响：启动方式呈 start 常驻控制台文案锚点（PU 契约原样）',
         html35.includes('启动方式') && html35.includes('常驻控制台窗'))
       check('PP-3-5③ launcher 变体仅 rlog 留痕：launcher=conhost（§4.8.5 切换纪律；0.1.12 生产基线 = ADR-26 conhost 形态）',
         rlogSlice(off35).includes('launcher=conhost'))
       check('PP-3-5④ 全族没有回归（PV/PW/PI/PP-1/PP-2/PU/PP-3 至此没有失败）', failures === 0)
+      // F3 收尾（关键块）：emit('error') 在这里转为带错误上下文的 FAIL 断言
+      const errs35 = runtimeErrors.slice(errMark35)
+      check(`PP-3-5 收尾：无 runtime error 事件（F3 兜底${errs35.length ? `，捕获：${errs35.map((e) => String(e.msg)).join(' | ')}` : ''}）`, errs35.length === 0)
       r35.dispose()
     } finally {
       router.captureLaunch = false
@@ -2766,6 +2909,18 @@ async function main() {
     // ---- PP-6-3: retry 冻结语义（L408-411 显式化：降级态不重检、恒 0）----
     px('PP-6-3 retry 冻结（ADR-25-①）：首轮配置端口失败 → 重试载荷 --port 0 + source=retry-degraded，且不重检（无第二条 not bindable）')
     {
+      // F5（0.1.18）：期望端口经环境变量注入（SIM_EXPECT_PORT_PP63，缺省 3132）+
+      // 块开始真实绑定测试；不可绑定（仅认 EACCES/EADDRINUSE）时 ①② 显式 SKIP
+      //（文案含「端口环境不满足」+ 错误码），块本身改用实测可绑定替代端口运行
+      //（retry 冻结机制照常走通，只是期望端口值无法兑现）；可绑定时按原断言执行。
+      const expectPort63 = envPort('SIM_EXPECT_PORT_PP63', 3132)
+      const bind63 = await probeBindErrorCode(expectPort63)
+      const portEnvSkip63 = !bind63.ok && (bind63.code === 'EACCES' || bind63.code === 'EADDRINUSE')
+      let runPort63 = expectPort63
+      if (portEnvSkip63) {
+        const sub63 = await findBindablePort()
+        if (sub63 !== null) runPort63 = sub63 // 极端环境（无任何可绑端口）则按原端口运行，由 F3/断言如实暴露
+      }
       const off63 = rlogOffset()
       globalThis.fetch = step2FailFetch6()
       seedInst({ dsh: null, windows: [] })
@@ -2774,20 +2929,27 @@ async function main() {
       let seq63 = 0
       router.onLaunch = (entry) => {
         seq63++
-        if (seq63 === 1) return launcherMock6({ pid: 4786, exitCode: 0 }) // 首轮早退（配置端口 3132 尚在载荷上）
+        if (seq63 === 1) return launcherMock6({ pid: 4786, exitCode: 0 }) // 首轮早退（配置端口尚在载荷上）
         writeBanner6(entry) // 重试（降级随机端口）成功
         return launcherMock6({ pid: 4786 + seq63 })
       }
-      const r63 = newRuntime(process.pid, { port: 3132, consoleVisible: true, resolvePortPidFn: holderFn6 })
+      const r63 = newRuntime(process.pid, { port: runPort63, consoleVisible: true, resolvePortPidFn: holderFn6 })
       await r63.start()
       const launches63 = router.calls.filter((c) => c.kind === 'launch')
       const trace63 = rlogSlice(off63)
-      check('PP-6-3① 首轮载荷 --port 3132（configured）→ 重试载荷 --port 0（降级冻结，未重检配置端口）',
-        launches63.length >= 2 && isConhostForm(launches63[0]) && payloadPort6(launches63[0]) === 3132 &&
-        isConhostForm(launches63[1]) && payloadPort6(launches63[1]) === 0)
-      check('PP-6-3② rlog source=retry-degraded 留痕（degrading 文案锚点保留）+ 无第二条 not bindable（冻结态不重预检）',
-        trace63.includes('degrading to random port on retry (avoid same-port loop)') && trace63.includes('source=retry-degraded') &&
-        !trace63.includes('not bindable') && trace63.includes(`detached launch (port=${3132}, source=configured`))
+      if (portEnvSkip63) {
+        skip('PP-6-3① 首轮载荷 --port 3132（configured）→ 重试载荷 --port 0（降级冻结，未重检配置端口）',
+          `端口环境不满足（期望端口 ${expectPort63} 当前不可绑定：${bind63.code}）`)
+        skip('PP-6-3② rlog source=retry-degraded 留痕（degrading 文案锚点保留）+ 无第二条 not bindable（冻结态不重预检）',
+          `端口环境不满足（期望端口 ${expectPort63} 当前不可绑定：${bind63.code}）`)
+      } else {
+        check('PP-6-3① 首轮载荷 --port 3132（configured）→ 重试载荷 --port 0（降级冻结，未重检配置端口）',
+          launches63.length >= 2 && isConhostForm(launches63[0]) && payloadPort6(launches63[0]) === expectPort63 &&
+          isConhostForm(launches63[1]) && payloadPort6(launches63[1]) === 0)
+        check('PP-6-3② rlog source=retry-degraded 留痕（degrading 文案锚点保留）+ 无第二条 not bindable（冻结态不重预检）',
+          trace63.includes('degrading to random port on retry (avoid same-port loop)') && trace63.includes('source=retry-degraded') &&
+          !trace63.includes('not bindable') && trace63.includes(`detached launch (port=${expectPort63}, source=configured`))
+      }
       r63.dispose()
     }
 
@@ -2799,7 +2961,18 @@ async function main() {
       router.handlers.view = () => fakeChild({ pid: 5310, code: 0, stdout: '0.1.1-rc.2\n' })
       router.onLaunch = () => fakeChild({ pid: 4680, code: 0 })
       globalThis.fetch = okFetch
-      const info64 = await new DP.DshProcess({ port: 3133, channel: 'latest', command: '', dshHome: '' }).start() // direct（fixed-port probe ok）
+      // 0.1.18 修复轮（端口绑定鲁棒，同 F-UPDATE 处理）：3133 在端口漂移时段可能
+      // EACCES——DshProcess.start() 在本块无捕获，fallback-random 路径会 90 秒后
+      // 抛 LaunchFailure 使整卷终止。本块断言只关心 resolver 输出隔离与 rotate
+      // 联动，与端口值无关，故不可绑定（仅认 EACCES/EADDRINUSE）时改用实测可绑定
+      // 的替代端口运行，断言语义零改动；按 §十二风险 1 提请评审点名。
+      let pp64Port = 3133
+      const b64 = await probeBindErrorCode(pp64Port)
+      if (!b64.ok && (b64.code === 'EACCES' || b64.code === 'EADDRINUSE')) {
+        const sub = await findBindablePort()
+        if (sub !== null) pp64Port = sub
+      }
+      const info64 = await new DP.DshProcess({ port: pp64Port, channel: 'latest', command: '', dshHome: '' }).start() // direct（fixed-port probe ok）
       const resolverLog64 = `${info64.logFile}.resolver`
       const mainLog64 = fs.existsSync(info64.logFile) ? fs.readFileSync(info64.logFile, 'utf8') : ''
       check('PP-6-4① resolver 子进程输出（npm view 版本 token）落 <log>.resolver 同批伴生文件（证据不丢，排障可查）',
@@ -4517,6 +4690,21 @@ async function main() {
     // -- 0.1.14 组清理：关闭 in-process 上游 ----------------------------------
     try { upServer.closeAllConnections() } catch { /* best-effort */ }
     upServer.close()
+  }
+
+  // ---- F3 全卷收口（0.1.18）：runtime error 事件仅允许预期条目 --------------
+  // 推广原则收口：任何 newRuntime() 实例的意外 emit('error') 都在此显式失败
+  //（带 windowPid + 错误上下文），而非静默或 ERR_UNHANDLED_ERROR 整卷崩溃。
+  // 预期白名单（诚实降级路径的有意驱动，各自由显式断言钉住）：
+  //   PP-8-3⑩ r2 会话失效 ×1（'dsh 会话失效'）
+  //   PP-10-3 rA/rB 引导降级 ×2（'该 dsh 实例无法建立面板会话'）
+  px('F3 全卷收口（0.1.18）：runtime error 事件仅预期条目（PP-8-3⑩ ×1 + PP-10-3 ×2），无意外 emit(error)')
+  {
+    const isExpectedRuntimeError = (m) => typeof m === 'string' &&
+      (m.includes('dsh 会话失效') || m.includes('该 dsh 实例无法建立面板会话'))
+    const unexpected = runtimeErrors.filter((e) => !isExpectedRuntimeError(e.msg))
+    check(`F3 全卷收口：无意外 runtime error 事件${unexpected.length ? `（捕获 ${unexpected.length} 条：${unexpected.map((e) => `[win ${e.windowPid}] ${String(e.msg)}`).join(' | ')}）` : '（兜底监听全程在位）'}`,
+      unexpected.length === 0)
   }
 
   // ---- cleanup -------------------------------------------------------------
