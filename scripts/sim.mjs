@@ -116,6 +116,13 @@
 // substitute port), plus bind-robust substitute ports for the F-UPDATE (3082)
 // and PP-6-4 (3133) launch seams (F4 acceptance: no attempt-level 90s waits
 // in drifted port environments; flagged for review per §十二风险 1).
+// 0.1.18 fix round follow-up (qa_code_3 C7): the same F5 seam closes PP-6-1
+// (SIM_EXPECT_PORT_PP61, default 3130 — ① SKIPs on EACCES/EADDRINUSE, the
+// block runs on a probed bindable substitute so ② cannot fall into the
+// 6x90s fallback wait), and the occ.listen victims in PP-6-1⑤ (3134) /
+// PP-6-2 (3131) get error handlers + a bindable substitute carrier
+// (makePortHeld) so a drifted port degrades to a SKIP, never an unhandled
+// 'error' crash.
 import { createRequire } from 'node:module'
 import { spawn } from 'node:child_process'
 import * as fs from 'node:fs'
@@ -475,13 +482,37 @@ function findBindablePort() {
   })
 }
 
-// F5 (0.1.18): expected-port env injection (SIM_EXPECT_PORT_PP35/PP63).
-// Unset/empty/garbage falls back to the documented default (3118/3132).
+// F5 (0.1.18): expected-port env injection (SIM_EXPECT_PORT_PP35/PP63/PP61).
+// Unset/empty/garbage falls back to the documented default (3118/3132/3130).
 function envPort(name, fallback) {
   const raw = process.env[name]
   if (raw === undefined || raw === '') return fallback
   const v = Number(raw)
   return Number.isInteger(v) && v > 0 && v <= 65535 ? v : fallback
+}
+
+// C7 closure (0.1.18 qa_code_3 follow-up): occupy a REAL port to drive the
+// fallback-random path (PP-6-1⑤ / PP-6-2). The victim socket carries an
+// 'error' handler — a drifted port (EACCES/EADDRINUSE) used to crash the
+// whole sim with an unhandled 'error' event; now the block falls back to a
+// probed bindable substitute carrier (assertions carry no literal port, so
+// semantics are unchanged) or, when nothing at all can be bound, the caller
+// SKIPs. Resolves to { occ, port, code: null } with occ still LISTENING
+// (caller closes), or { occ: null, port, code } when occupation failed.
+async function makePortHeld(preferredPort) {
+  const occ = net.createServer()
+  let code = null
+  occ.on('error', (e) => { code = e && e.code ? e.code : 'UNKNOWN' })
+  await new Promise((res) => occ.listen(preferredPort, '127.0.0.1', res))
+  if (code === null) return { occ, port: preferredPort, code: null }
+  occ.close()
+  const sub = await findBindablePort()
+  if (sub === null) return { occ: null, port: preferredPort, code }
+  code = null
+  await new Promise((res) => occ.listen(sub, '127.0.0.1', res))
+  if (code === null) return { occ, port: sub, code: null }
+  occ.close()
+  return { occ: null, port: sub, code }
 }
 
 async function main() {
@@ -2827,10 +2858,30 @@ async function main() {
     // ---- PP-6-1: 单一来源不变量（configured 态：direct argv ≡ start 载荷 ≡ 单点返回值）----
     px('PP-6-1 单一来源不变量（ADR-25-①）：direct argv --port ≡ 常驻载荷 --port ≡ resolveLaunchPort().port；rlog source= 与返回枚举一致')
     {
-      const PORT61 = 3130
-      const dec61 = await resolveLaunchPort(PORT61)
-      check('PP-6-1① resolveLaunchPort 单元（空闲配置端口）：{ port:<N>, source=configured }（具名单点，语义分离）',
-        dec61.port === PORT61 && dec61.source === 'configured')
+      // C7 closure (0.1.18 qa_code_3): expected-port env injection
+      // (SIM_EXPECT_PORT_PP61, default 3130) + a real bind probe up front;
+      // on EACCES/EADDRINUSE ① SKIPs explicitly (note names the port and the
+      // bind error code) and the block runs on a probed bindable substitute —
+      // ②③④'s single-source assertions compare against dec61.port, so their
+      // semantics are unchanged, and ②'s r61.start() can no longer slide into
+      // the 6x90s fallback-random wait (F4 acceptance). Bindable ports run
+      // the original assertions verbatim.
+      const PORT61 = envPort('SIM_EXPECT_PORT_PP61', 3130)
+      const bind61 = await probeBindErrorCode(PORT61)
+      const portEnvSkip61 = !bind61.ok && (bind61.code === 'EACCES' || bind61.code === 'EADDRINUSE')
+      let runPort61 = PORT61
+      if (portEnvSkip61) {
+        const sub61 = await findBindablePort()
+        if (sub61 !== null) runPort61 = sub61 // no bindable port at all -> run as-is; F3/assertions surface it honestly
+      }
+      const dec61 = await resolveLaunchPort(runPort61)
+      if (portEnvSkip61) {
+        skip('PP-6-1① resolveLaunchPort 单元（空闲配置端口）：{ port:<N>, source=configured }（具名单点，语义分离）',
+          `端口环境不满足（期望端口 ${PORT61} 当前不可绑定：${bind61.code}）`)
+      } else {
+        check('PP-6-1① resolveLaunchPort 单元（空闲配置端口）：{ port:<N>, source=configured }（具名单点，语义分离）',
+          dec61.port === runPort61 && dec61.source === 'configured')
+      }
       const off61 = rlogOffset()
       globalThis.fetch = step2FailFetch6()
       seedInst({ dsh: null, windows: [] })
@@ -2838,7 +2889,7 @@ async function main() {
       router.calls.length = 0
       router.captureLaunch = true
       router.onLaunch = () => launcherMock6({ pid: 4780 }) // alive conhost host
-      const r61 = newRuntime(process.pid, { port: PORT61, consoleVisible: true, resolvePortPidFn: holderFn6 })
+      const r61 = newRuntime(process.pid, { port: runPort61, consoleVisible: true, resolvePortPidFn: holderFn6 })
       await r61.start()
       const launches61 = router.calls.filter((c) => c.kind === 'launch')
       const trace61 = rlogSlice(off61)
@@ -2854,7 +2905,7 @@ async function main() {
       releaseStartupLock()
       router.calls.length = 0
       router.onLaunch = () => fakeChild({ pid: 4781, code: 0 })
-      const r61b = newRuntime(process.pid, { port: PORT61, consoleVisible: false })
+      const r61b = newRuntime(process.pid, { port: runPort61, consoleVisible: false })
       await r61b.start()
       const launches61b = router.calls.filter((c) => c.kind === 'launch')
       check('PP-6-1④ direct argv --port ≡ 同一单点返回值（direct/start 同点取值，P>0 态）',
@@ -2862,15 +2913,23 @@ async function main() {
       r61b.dispose()
 
       // fallback-random 态（单元级）：真实占用 → { port:0, source=fallback-random } + rlog 三元组。
+      // C7 closure（qa_code_3 附带发现）：occ.listen 补 error 监听（makePortHeld）——
+      // 3134 不可绑定时不再以未捕获 'error' 崩溃整个 sim，改用实测可绑定端口制造真实
+      // 占用（断言 configured=实际占用端口，可绑定时与原字面 3134 等值）；无任何可绑
+      // 端口时显式 SKIP。
       const off61c = rlogOffset()
-      const occ61 = net.createServer()
-      await new Promise((res) => occ61.listen(3134, '127.0.0.1', res))
-      const dec61c = await resolveLaunchPort(3134)
-      occ61.close()
-      check('PP-6-1⑤ resolveLaunchPort 单元（真实被占端口）：{ port:0, source=fallback-random } + rlog 锚点文案与三元组留痕（既有文案零改动）',
-        dec61c.port === 0 && dec61c.source === 'fallback-random' &&
-        rlogSlice(off61c).includes('not bindable; falling back to random (ADR-1)') &&
-        rlogSlice(off61c).includes('(source=fallback-random, configured=3134, effective=0)'))
+      const held61 = await makePortHeld(3134)
+      if (held61.occ === null) {
+        skip('PP-6-1⑤ resolveLaunchPort 单元（真实被占端口）：{ port:0, source=fallback-random } + rlog 锚点文案与三元组留痕（既有文案零改动）',
+          `端口环境不满足（期望端口 ${held61.port} 当前不可绑定：${held61.code}）`)
+      } else {
+        const dec61c = await resolveLaunchPort(held61.port)
+        held61.occ.close()
+        check('PP-6-1⑤ resolveLaunchPort 单元（真实被占端口）：{ port:0, source=fallback-random } + rlog 锚点文案与三元组留痕（既有文案零改动）',
+          dec61c.port === 0 && dec61c.source === 'fallback-random' &&
+          rlogSlice(off61c).includes('not bindable; falling back to random (ADR-1)') &&
+          rlogSlice(off61c).includes(`(source=fallback-random, configured=${held61.port}, effective=0)`))
+      }
     }
 
     // ---- PP-6-2: 真实占用降级留痕（R3 场景回归：E-R3-2 时序在 sim 层可复现断言）----
@@ -2881,29 +2940,41 @@ async function main() {
       seedInst({ dsh: null, windows: [] })
       releaseStartupLock()
       router.calls.length = 0
-      const occ62 = net.createServer()
-      await new Promise((res) => occ62.listen(3131, '127.0.0.1', res))
-      let seq62 = 0
-      router.onLaunch = (entry) => {
-        seq62++
-        if (isConhostForm(entry)) return launcherMock6({ pid: 4782 + seq62, exitCode: 0 }) // 内层早死 → 常驻控制台窗口宿主随退
-        writeBanner6(entry) // the surviving direct attempt (degraded random port)
-        return fakeChild({ pid: 4782 + seq62, code: 0 })
+      // C7 closure（qa_code_3 附带发现）：occ.listen 补 error 监听（makePortHeld）——
+      // 3131 不可绑定时不再以未捕获 'error' 崩溃整个 sim，改用实测可绑定端口制造真实
+      // 占用（断言不含端口字面值，语义不变）；无任何可绑端口时三条断言显式 SKIP，
+      // 且不启动 r62（避免 fallback 态的 90 秒级等待）。
+      const held62 = await makePortHeld(3131)
+      if (held62.occ === null) {
+        skip('PP-6-2① rlog 含既有降级锚点（文案零改动）+ source=fallback-random 留痕（E-R3-2 时序形态）',
+          `端口环境不满足（期望端口 ${held62.port} 当前不可绑定：${held62.code}）`)
+        skip('PP-6-2② 常驻载荷（conhost）与 direct argv 均 --port 0（同点回落，R3 场景可复现）',
+          `端口环境不满足（期望端口 ${held62.port} 当前不可绑定：${held62.code}）`)
+        skip('PP-6-2③ `payload port = 0` 留痕行在场（ADR-25-②，RV-12 三证之③的 sim 层形态）',
+          `端口环境不满足（期望端口 ${held62.port} 当前不可绑定：${held62.code}）`)
+      } else {
+        let seq62 = 0
+        router.onLaunch = (entry) => {
+          seq62++
+          if (isConhostForm(entry)) return launcherMock6({ pid: 4782 + seq62, exitCode: 0 }) // 内层早死 → 常驻控制台窗口宿主随退
+          writeBanner6(entry) // the surviving direct attempt (degraded random port)
+          return fakeChild({ pid: 4782 + seq62, code: 0 })
+        }
+        const r62 = newRuntime(process.pid, { port: held62.port, consoleVisible: true, resolvePortPidFn: holderFn6 })
+        await r62.start()
+        held62.occ.close()
+        const launches62 = router.calls.filter((c) => c.kind === 'launch')
+        const trace62 = rlogSlice(off62)
+        const direct62 = launches62.find((c) => !isConhostForm(c) && !isStartWaitForm(c))
+        check('PP-6-2① rlog 含既有降级锚点（文案零改动）+ source=fallback-random 留痕（E-R3-2 时序形态）',
+          trace62.includes('not bindable; falling back to random (ADR-1)') && trace62.includes('source=fallback-random'))
+        check('PP-6-2② 常驻载荷（conhost）与 direct argv 均 --port 0（同点回落，R3 场景可复现）',
+          launches62.length >= 3 && isConhostForm(launches62[0]) && payloadPort6(launches62[0]) === 0 &&
+          direct62 !== undefined && payloadPort6(direct62) === 0)
+        check('PP-6-2③ `payload port = 0` 留痕行在场（ADR-25-②，RV-12 三证之③的 sim 层形态）',
+          trace62.includes('payload port = 0'))
+        r62.dispose()
       }
-      const r62 = newRuntime(process.pid, { port: 3131, consoleVisible: true, resolvePortPidFn: holderFn6 })
-      await r62.start()
-      occ62.close()
-      const launches62 = router.calls.filter((c) => c.kind === 'launch')
-      const trace62 = rlogSlice(off62)
-      const direct62 = launches62.find((c) => !isConhostForm(c) && !isStartWaitForm(c))
-      check('PP-6-2① rlog 含既有降级锚点（文案零改动）+ source=fallback-random 留痕（E-R3-2 时序形态）',
-        trace62.includes('not bindable; falling back to random (ADR-1)') && trace62.includes('source=fallback-random'))
-      check('PP-6-2② 常驻载荷（conhost）与 direct argv 均 --port 0（同点回落，R3 场景可复现）',
-        launches62.length >= 3 && isConhostForm(launches62[0]) && payloadPort6(launches62[0]) === 0 &&
-        direct62 !== undefined && payloadPort6(direct62) === 0)
-      check('PP-6-2③ `payload port = 0` 留痕行在场（ADR-25-②，RV-12 三证之③的 sim 层形态）',
-        trace62.includes('payload port = 0'))
-      r62.dispose()
     }
 
     // ---- PP-6-3: retry 冻结语义（L408-411 显式化：降级态不重检、恒 0）----
