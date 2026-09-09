@@ -184,6 +184,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
   }
   runtime.on('state', updateStatus)
+  // 0.1.18 P1 (fix round; root-cause plan §11 task 7): the runtime emits
+  // 'error' (payload = the already-set errorMessage string) whenever the
+  // lifecycle lands in the error state — detached-launch retry exhaustion
+  // (launchManaged), the step4 never-ready timeout, an adopt session that
+  // cannot be established (enterSessionUnavailable), and probe-detected
+  // session expiry. Without a listener, Node's EventEmitter re-throws a
+  // listener-less 'error' emit and takes the extension host down. This
+  // listener ONLY logs and re-renders the error surface — it never relaunches
+  // (the retry budget is already bounded inside launchManaged) and it never
+  // invents display fields: the payload is forwarded to the log verbatim,
+  // while the status bar / panel / details card keep rendering from
+  // runtime.errorMessage via the existing 'state' subscriptions
+  // (setState('error') has already run before the 'error' emit).
+  runtime.on('error', (msg: string) => {
+    appendDecisionLog(`[extension] runtime error: ${msg}`)
+    updateStatus()
+  })
 
   // Panel (right side bar) + details view (ADR-22; 0.1.16 #93: split into two
   // containers — dsh.panel stays in dsh-viewContainer, dsh.details moved to
