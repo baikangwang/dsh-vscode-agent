@@ -27,6 +27,18 @@ import { logFile, runtimeLogFile } from './paths'
 
 /** Version-token regex for the self-report line (named constant; anchored). */
 const SELF_VERSION_RE = /^v?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)$/
+/**
+ * 0.1.18 §7.1: command-line semver-token scan regex (SELF_VERSION_RE family —
+ * same `x.y.z` core + optional prerelease/build segment; unanchored). Boundary
+ * rules keep dotted-number noise out:
+ *  - 前置边界 = 行首或非 `[A-Za-z0-9_.]` 字符（`@deepseek-ai/dsh@0.1.5-alpha.1`
+ *    的 `@` / 路径分隔符 / 空白命中；回环 IP 四段点分数字的内层 `0.0.1` 因前置
+ *    `.` 被排除，不误报）；
+ *  - 后置边界 = 串尾或非 `[A-Za-z0-9_.]` 字符（排除 `1.2.3.4` 的尾随 `.4`）。
+ * The `v` prefix is optional and stripped from the reported token. No `g` flag:
+ * exec() must always return the FIRST match without cross-call lastIndex state.
+ */
+const CMDLINE_VERSION_RE = /(?:^|[^\w.])v?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)(?![\w.])/
 /** externalCommandLine hard cap (§4.7.2: 截断 ≤300 字符，排障辅助). */
 export const EXTERNAL_CMDLINE_MAX = 300
 
@@ -102,6 +114,25 @@ export interface DshLaunchInfo {
    * 降级快照随 rec 保留——进程事实与会话降级正交（degrade 不清除本字段）。
    */
   processStartedAt?: string | null
+  /**
+   * 0.1.18 第 18 个可选字段（ADR-48 受控放宽；#16 externalUrl / #17
+   * processStartedAt 同型 additive 先例，既有消费者零破坏）：external 态只读
+   * 扫描所得 npx 缓存目录版本（newest 候选；扫描范围 = npxRoot() 整根，多候选
+   * 为常态）。语义分离（ADR-40 同型禁忌）：本字段 = 「此刻 npx 缓存里有什么」
+   * 的间接事实，绝不复用 resolverVersion（= 本次托管会话 resolver 命中，
+   * external 态恒 null 不复活）。非 external / 扫描失败 → null；
+   * user-stop / disconnect 恒 null（放宽不外溢）。
+   */
+  externalDshVersion?: string | null
+  /** externalDshVersion 的来源标注（buildExternalVersionNote 文案单点输出；null = 无版本可标注）。 */
+  externalDshVersionNote?: string | null
+  /**
+   * externalCommandLine 原文中直接出现的 semver 版本号（extractVersionFromCommandLine
+   * 提取；只报命令行原文内容，不推断 npx 解析结果）。step1 re-adopt 场景
+   * externalCommandLine 为 null（per-attach 重置且注册表不落盘，§3.3）→ 本字段
+   * 恒 null（目录版本仍可得）；非 external → null。
+   */
+  externalCmdlineVersion?: string | null
 }
 
 /** Minimal resolver-hit shape (= dshResolver.DshBinInfo, duplicated structurally
@@ -141,6 +172,18 @@ export interface LaunchInfoInput {
   externalCommandLine?: string | null
   /** 0.1.14: token-contract (T path) external URL; degraded snapshots force null. */
   externalUrl?: string | null
+  /**
+   * 0.1.18: external 态只读扫描的 npx 缓存目录版本（scanNpxCacheReadonly 输出，
+   * 调用方经 runtime 透传）。buildLaunchInfo 单点把关：仅 external 接管态透传
+   * （degrade===true 且 managedBy==='external' 且非 user-stop/disconnect 快照
+   * ——后者由 degradedLaunchMode 显式标识，见下方字段说明）；user-stop /
+   * disconnect / managed 快照恒 null（§7.2 矩阵第 4 行，放宽不外溢）。
+   */
+  externalDshVersion?: string | null
+  /** 0.1.18: externalDshVersion 的来源标注（buildExternalVersionNote 单点组装）。 */
+  externalDshVersionNote?: string | null
+  /** 0.1.18: externalCommandLine 原文 semver 版本（extractVersionFromCommandLine 输出）。 */
+  externalCmdlineVersion?: string | null
   /** THIS launch's managed log (existence-filtered into logFiles). */
   launchLogFile?: string | null
   /** Degradation switch: clears version/bin fields (user-stop / disconnect /
@@ -166,6 +209,48 @@ export function parseSelfVersion(logHeadChunk: string): string | null {
   if (first === undefined) return null
   const m = SELF_VERSION_RE.exec(first)
   return m !== null ? m[1] : null
+}
+
+// ------------- 0.1.18 ADR-48 external version sources (§3.2 / §7.1 文案单点) -------------
+
+/**
+ * 0.1.18 文案单点（QA r1 A5）：external 态「据启动命令行」来源标注。tooltip /
+ * 详情卡一律引用本常量，UI 层禁止就地书写该字面。
+ */
+export const EXTERNAL_VERSION_NOTE_CMDLINE = '据启动命令行'
+/**
+ * 0.1.18 文案单点（QA r1 A5）：external 态命令行版本与 npx 缓存目录版本不一致
+ * 的警示文案。tooltip / 详情卡警示行一律引用本常量，UI 层禁止就地书写该字面。
+ */
+export const EXTERNAL_VERSION_MISMATCH_WARNING = '命令行与 npx 缓存目录版本不一致——以实际运行的 dsh 为准'
+
+/**
+ * externalCommandLine 原文 semver 扫描（0.1.18 §7.1）：命中返回不带 v 前缀的
+ * 版本号，否则 null。只报命令行原文里出现的内容，不推断 npx 的解析结果。
+ * SELF_VERSION_RE 同族正则（CMDLINE_VERSION_RE）非锚定扫描：
+ * `@deepseek-ai/dsh@0.1.5-alpha.1` → `0.1.5-alpha.1`；`v1.2.3` → `1.2.3`；
+ * 无版本形态（`npx @deepseek-ai/dsh web`）→ null；回环 IP / `1.2.3.4` 类四段
+ * 点分数字串被前后边界排除。调用方传入的命令行可能已被 EXTERNAL_CMDLINE_MAX
+ * 截断——截断只可能让 token 缺席（提不出），不放大语义。
+ */
+export function extractVersionFromCommandLine(cmdline: string | null): string | null {
+  if (typeof cmdline !== 'string' || cmdline.length === 0) return null
+  const m = CMDLINE_VERSION_RE.exec(cmdline)
+  return m !== null ? m[1] : null
+}
+
+/**
+ * external 版本来源标注组装（0.1.18 §7.1 文案单点；单测可断言）：
+ * version=null → null（无版本可标注）；candidateCount>1 → 多候选变体
+ * `npx 缓存存在 N 个版本（显示最新，未核实运行进程）`；否则单候选特例
+ * `据 npx 缓存目录（未核实运行进程）`。本函数与上方两个常量是全部来源标注的
+ * 唯一出口（QA r1 A5），tooltip / 详情卡 / 警示行一律引用。
+ */
+export function buildExternalVersionNote(version: string | null, candidateCount: number): string | null {
+  if (version === null) return null
+  return candidateCount > 1
+    ? `npx 缓存存在 ${candidateCount} 个版本（显示最新，未核实运行进程）`
+    : '据 npx 缓存目录（未核实运行进程）'
 }
 
 /**
@@ -202,6 +287,20 @@ export function buildLaunchInfo(input: LaunchInfoInput): DshLaunchInfo {
   // token-contract snapshot; degrade (external takeover / user-stop /
   // disconnect) honestly nulls it alongside the version/bin fields.
   const externalUrl = degrade ? null : (typeof input.externalUrl === 'string' && input.externalUrl.length > 0 ? input.externalUrl : null)
+  // 0.1.18 ADR-48 受控放宽（范围仅 external 接管态，§3.2/§7.2）：三个 external
+  // 专属版本字段仅在 external 态透传。user-stop / disconnect 快照由
+  // degradedLaunchMode 显式标识（'start' = user-stop、null = disconnect；
+  // undefined = adopt/managed 落点），此时恒 null —— 无论 managedBy 历史
+  // （§7.2 矩阵第 4 行「放宽不外溢」：进程已死/已断开时目录版本反而误导；
+  // external 会话中途断开的快照同样不携带版本事实）。managed 语义字段
+  // （dshVersion / resolverVersion / binDir / dshBin / resolverMode /
+  // externalUrl）的强制 null 维持不变；versionCrossCheck 恒 'unknown'
+  // （下方 crossCheckVersions(null, null) 既有推导，不新增分支）。
+  const isStopSnapshot = input.degradedLaunchMode !== undefined
+  const externalPass = degrade && managedBy === 'external' && !isStopSnapshot
+  const externalDshVersion = externalPass ? (input.externalDshVersion ?? null) : null
+  const externalDshVersionNote = externalPass ? (input.externalDshVersionNote ?? null) : null
+  const externalCmdlineVersion = externalPass ? (input.externalCmdlineVersion ?? null) : null
   const candidates: LaunchLogFileEntry[] = [
     ...(input.launchLogFile !== null && input.launchLogFile !== undefined && input.launchLogFile.length > 0
       ? [{ label: path.basename(input.launchLogFile), path: input.launchLogFile }]
@@ -230,6 +329,11 @@ export function buildLaunchInfo(input: LaunchInfoInput): DshLaunchInfo {
     // to session degradation — degrade does NOT clear this field; a record
     // without it assembles null → the card shows 未知, never startedAt).
     processStartedAt: rec?.processStartedAt ?? null,
+    // 0.1.18 ADR-48: external 态三字段（见上方 externalPass 说明）；managed /
+    // user-stop / disconnect 快照恒 null。
+    externalDshVersion,
+    externalDshVersionNote,
+    externalCmdlineVersion,
   }
 }
 

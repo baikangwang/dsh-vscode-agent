@@ -22,7 +22,7 @@ import * as vscode from 'vscode'
 import { DshRuntime } from './runtime'
 import { DshPanel } from './webview'
 import { DshDetailsProvider } from './webviewDetails'
-import { statusLine } from './launchInfo'
+import { EXTERNAL_VERSION_MISMATCH_WARNING, EXTERNAL_VERSION_NOTE_CMDLINE, statusLine } from './launchInfo'
 import { appendDecisionLog, ensureDataDir, logFile, redactSecrets } from './paths'
 import { CHANNEL_PICK_PLACEHOLDER, runFirstLaunchChannelSelect, type ChannelSelectDeps } from './channelSelect'
 
@@ -97,6 +97,12 @@ function buildChannelSelectDeps(): ChannelSelectDeps {
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   ensureDataDir()
+  // 0.1.18 落点 3: the EXTENSION's own version — NOT a dsh launch fact; it
+  // reaches the details card via DetailsRenderOptions.extVersion (and the
+  // status-bar tooltip 插件 row), never into DshLaunchInfo. 容错：packageJSON
+  // 缺失 / 非字符串 → null（卡片显示「未知」，诚实降级）。
+  const extPkgVersion: unknown = context.extension?.packageJSON?.version
+  const extVersion = typeof extPkgVersion === 'string' && extPkgVersion.length > 0 ? extPkgVersion : null
   // 0.1.15 #83/#86 (ADR-31): the QuickPick FIRST-LAUNCH form is REMOVED — the
   // runtime is constructed FIRST below; when dsh.channelSelected=false the
   // auto-start parks it in awaitingChannel (the panel pick card owns the
@@ -127,12 +133,37 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       case 'ready': {
         // Version segment = self-reported primary, resolver fallback; BOTH
         // missing → no version segment (never a misleading placeholder, H1).
-        const version = info?.dshVersion ?? info?.resolverVersion ?? null
+        // 0.1.18 ADR-48 落点 1: external 态在候选链尾追加间接源（目录版本 →
+        // 命令行版本）；managed 语义候选链不变，且 managed 快照三新字段恒 null
+        // （buildLaunchInfo 单点把关），链尾追加对 managed 态零影响。
+        const version =
+          info?.dshVersion ?? info?.resolverVersion ??
+          (info?.managedBy === 'external'
+            ? (info.externalDshVersion ?? info.externalCmdlineVersion ?? null)
+            : null)
         statusItem.text = statusLine('ready', runtime.port, version)
         const tip = [`dsh web · ${runtime.url ?? ''}`]
         if (info?.dshVersion) tip.push(`版本：v${info.dshVersion}（自报）`)
         if (info?.resolverVersion) tip.push(`版本：v${info.resolverVersion}（bin 目录）`)
         if (info?.binDir) tip.push(`bin：${info.binDir}`)
+        // 0.1.18 落点 1（external 态追加行；managed 态 tooltip 逐字不变）：版本
+        // 行模板 `版本：<version> · <标注>`，标注一律引用 §7.1 文案单点（快照
+        // note 字段 = buildExternalVersionNote 输出；命令行源 / 不一致警示 =
+        // launchInfo 标注常量），tooltip 层禁止就地书写标注文案（QA r1 A5）。
+        if (info?.managedBy === 'external') {
+          if (info.externalDshVersion !== null && info.externalDshVersionNote !== null) {
+            tip.push(`版本：v${info.externalDshVersion} · ${info.externalDshVersionNote}`)
+          } else if (info.externalCmdlineVersion !== null) {
+            tip.push(`版本：v${info.externalCmdlineVersion} · ${EXTERNAL_VERSION_NOTE_CMDLINE}`)
+          }
+          if (
+            info.externalDshVersion !== null && info.externalCmdlineVersion !== null &&
+            info.externalDshVersion !== info.externalCmdlineVersion
+          ) {
+            tip.push(`注意：${EXTERNAL_VERSION_MISMATCH_WARNING}`)
+          }
+          tip.push(`插件：v${extVersion ?? '未知'}`)
+        }
         tip.push(`日志：${logFile()}`)
         tip.push(`(${runtime.managedBy ?? 'unknown'}：stop/restart 不关停 dsh；点击查看 dsh 配置)`)
         statusItem.tooltip = tip.join('\n')
@@ -158,7 +189,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // containers — dsh.panel stays in dsh-viewContainer, dsh.details moved to
   // dsh-configContainer; view ids / activationEvents unchanged)
   const panel = new DshPanel(runtime)
-  const details = new DshDetailsProvider(runtime)
+  // 0.1.18 落点 3: the extension version rides the render-options channel into
+  // the details card (插件版本行全相位可见).
+  const details = new DshDetailsProvider(runtime, extVersion)
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(DshPanel.viewId, panel, {
       webviewOptions: { retainContextWhenHidden: false },

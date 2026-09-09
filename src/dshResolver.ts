@@ -225,6 +225,39 @@ function pickNewest(list: Candidate[]): Candidate | null {
   return [...list].sort(byNewest)[0]
 }
 
+// ------------------------------------------------- read-only cache scan (0.1.18)
+
+/** Result shape of scanNpxCacheReadonly (design 0.1.18 §7.1). */
+export interface NpxCacheScan {
+  /** Newest candidate's package.json version. */
+  version: string
+  /** The newest candidate's npx-cache directory. */
+  dir: string
+  /** Total dsh candidates found under the whole npxRoot (multi-candidate is the norm). */
+  candidateCount: number
+}
+
+/**
+ * 0.1.18 ADR-48 (#1, design §7.1): READ-ONLY scan of the npx cache for the
+ * external-takeover version display. Reuses scanCandidates() — the same
+ * whole-root glob (`<npxRoot>\*`; the DSH_NPX_ROOT seam wins exactly as in
+ * resolveDshBin) and the package.json name+version content match — and picks
+ * the newest-mtime candidate (byNewest: mtime desc, then dir name asc).
+ * bin.js absence does NOT affect the version report: the read-only scan
+ * deliberately omits the resolver's binJs integrity semantics.
+ *
+ * 契约红线（R3；PU-13-4 断言）：本函数只读 —— 不调用 npm view / npm install、
+ * 不写任何 meta 文件、不产生网络请求；无候选 / 目录不可读 → null（诚实降级，
+ * 调用方透传 null + 留痕）。既有 resolveDshBin 行为零变化：本函数只新增一个
+ * 读侧出口，不触碰任何写入路径。
+ */
+export function scanNpxCacheReadonly(): NpxCacheScan | null {
+  const cands = scanCandidates()
+  const newest = pickNewest(cands)
+  if (newest === null) return null
+  return { version: newest.version, dir: newest.dir, candidateCount: cands.length }
+}
+
 // ------------------------------------------------------------- meta (ADR-13)
 
 interface RuntimeMeta {

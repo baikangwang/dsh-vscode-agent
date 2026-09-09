@@ -28,7 +28,7 @@
 // #83: the awaitingChannel channel-pick card (DOM always baked, shown/hidden
 // by state); the button disable matrix (#91) is baked per state.
 import type { DshLaunchInfo } from './launchInfo'
-import { formatLocalTimestamp } from './launchInfo'
+import { EXTERNAL_VERSION_MISMATCH_WARNING, EXTERNAL_VERSION_NOTE_CMDLINE, formatLocalTimestamp } from './launchInfo'
 import type { RuntimeState } from './runtime'
 import { buttonDisableRules } from './panelMessages'
 import { channelPickItems } from './channelSelect'
@@ -265,6 +265,13 @@ export interface DetailsRenderOptions {
    * auto-restarts). Absent = no pending-restart surface.
    */
   configChannel?: string | null
+  /**
+   * 0.1.18 落点 3: the EXTENSION's own version (caller passes it from
+   * `context.extension.packageJSON.version`，容错 null)。插件版本不是 dsh 启动
+   * 事实——走渲染选项通道（cspSource / configChannel 同型先例），不进
+   * DshLaunchInfo。null → 插件版本行显示「未知」（诚实降级）。
+   */
+  extVersion?: string | null
 }
 
 /** Escape a runtime value for safe embedding into HTML attribute/content. */
@@ -293,11 +300,13 @@ export function buildDetailsHtml(
   if (phase === 'empty') {
     body = `
   <div class="head">dsh 未就绪</div>
+  ${kvRow('插件版本', extVersionText(opts?.extVersion))}
   <div class="muted">正在启动 dsh…启动完成后此处显示版本与 bin 目录信息。</div>`
   } else if (phase === 'error') {
     const errText = opts?.errorMessage ?? null
     body = `
   <div class="head">dsh 启动失败</div>
+  ${kvRow('插件版本', extVersionText(opts?.extVersion))}
   <div class="mono err">${escapeAttr(errText !== null && errText.length > 0 ? errText : '未知错误')}</div>
   <div class="actions"><button data-action="restart">重试（重启 dsh）</button></div>`
   } else if (phase === 'stopped') {
@@ -307,6 +316,7 @@ export function buildDetailsHtml(
       : '已断开（dsh 进程未停止或异常退出）'
     body = `
   <div class="head">${head}</div>
+  ${kvRow('插件版本', extVersionText(opts?.extVersion))}
   <div class="muted">如需重新连接，请点「重连」；主面板工具栏 ⟳ 亦可。</div>${info !== null ? stoppedRows(info) : ''}
   <div class="actions"><button data-action="restart">重连</button></div>`
   } else {
@@ -409,16 +419,46 @@ function readyBody(info: DshLaunchInfo | null, opts?: DetailsRenderOptions): str
   if (info === null) {
     return `
   <div class="head">dsh 配置</div>
+  ${kvRow('插件版本', extVersionText(opts?.extVersion))}
   <div class="muted">版本未知（本次会话未解析）</div>
   <div class="muted">尚无启动信息；dsh 就绪后此处显示版本与 bin 目录。</div>`
   }
   if (info.managedBy === 'external') {
-    // H1 external degraded card: explanatory copy + available fields only;
-    // NO big version, NO bin copy/open actions (§4.7.4 / PU-3).
+    // 0.1.18 ADR-48 受控放宽（替代 0.1.9 H1 的「external 无版本」现状，§3.4
+    // 落点 2）：版本区间接源 = 目录版本（主源）/ 命令行字面版本；每个版本值带
+    // 来源标注，标注一律引用 launchInfo 文案单点（buildExternalVersionNote
+    // 输出经快照 note 字段 + 标注常量），UI 层禁止就地书写标注文案字面
+    // （QA r1 A5）。双缺 = 「版本未知（本次会话未能确定）」（诚实降级）。
+    // bin 目录照旧无（扩展未解析，H1 bin 语义不放宽）。
     const cmd = info.externalCommandLine
+    const dirV = info.externalDshVersion ?? null
+    const cmdV = info.externalCmdlineVersion ?? null
+    let verBlock: string
+    if (dirV !== null) {
+      verBlock = `<div class="ver" id="version-big">${escapeAttr(`v${dirV}`)}</div>
+  <div class="muted">${escapeAttr(info.externalDshVersionNote ?? '')}</div>`
+      if (cmdV !== null) {
+        verBlock += `
+  <div class="muted">启动命令行含版本 v${escapeAttr(cmdV)}</div>`
+      }
+      if (cmdV !== null && cmdV !== dirV) {
+        verBlock += `
+  <div class="xcheck warn">${escapeAttr(EXTERNAL_VERSION_MISMATCH_WARNING)}</div>`
+      }
+    } else if (cmdV !== null) {
+      // 仅命令行版本可得（§7.2 矩阵第 3 行 / PU-13-1⑤）：标注 = 文案单点常量。
+      verBlock = `<div class="ver" id="version-big">${escapeAttr(`v${cmdV}`)}</div>
+  <div class="muted">${escapeAttr(EXTERNAL_VERSION_NOTE_CMDLINE)}</div>`
+    } else {
+      // 双缺：诚实降级（无版本可显示，绝不放占位版本号）。
+      verBlock = `<div class="muted">版本未知（本次会话未能确定）</div>`
+    }
     return `
   <div class="head">dsh 配置</div>
-  <div class="amber">外部接管的 dsh——由外部命令自行启动，扩展未解析其 bin 目录与版本。</div>
+  <div class="amber">外部接管的 dsh——由外部命令自行启动，扩展未解析其 bin 目录；版本为间接来源（见标注）。</div>
+  <div class="sect">版本</div>
+  ${verBlock}
+  ${kvRow('插件版本', extVersionText(opts?.extVersion))}
   ${kvRow('端口', info.port !== null ? String(info.port) : '—')}
   ${kvRow('pid', info.pid !== null ? String(info.pid) : '—')}
   ${kvRow('managedBy', managedByText(info.managedBy))}
@@ -469,6 +509,7 @@ function readyBody(info: DshLaunchInfo | null, opts?: DetailsRenderOptions): str
   <div class="head">dsh 配置</div>
   <div class="sect">版本</div>
   ${verBlock}
+  ${kvRow('插件版本', extVersionText(opts?.extVersion))}
   ${channelSwitcherHtml(info.channel, opts)}
   ${kvRow('启动方式', launchModeText(info, opts))}
   ${binBlock}
@@ -542,6 +583,15 @@ function logFilesHtml(info: DshLaunchInfo): string {
 
 function kvRow(k: string, v: string): string {
   return `<div class="row"><span class="k">${escapeAttr(k)}</span><span class="v">${escapeAttr(v)}</span></div>`
+}
+
+/**
+ * 插件版本行取值（0.1.18 落点 3，五相位全显示）：null / 空串 → 「未知」（诚实
+ * 降级），否则 `v<version>`。值经 kvRow 的 escapeAttr 转义注入（PU-13-6 注入
+ * 安全断言面）。
+ */
+function extVersionText(extVersion: string | null | undefined): string {
+  return extVersion != null && extVersion.length > 0 ? `v${extVersion}` : '未知'
 }
 
 function copyBtn(text: string, label: string): string {

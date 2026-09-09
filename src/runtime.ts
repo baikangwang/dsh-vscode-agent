@@ -33,8 +33,8 @@ import {
   type DshRecord, type IdentityVerdict,
 } from './instance'
 import { DshProcess, START_LAUNCHER_LABEL, judgeContractByVersion, probeDetail, resolveBannerFromLog, treeKill, type ContractTier, type ProbeKind, type SpawnedInfo } from './dshProcess'
-import { readRuntimeMeta, resolveDshBin } from './dshResolver'
-import { buildLaunchInfo, parseSelfVersion, type DshLaunchInfo } from './launchInfo'
+import { readRuntimeMeta, resolveDshBin, scanNpxCacheReadonly } from './dshResolver'
+import { buildExternalVersionNote, buildLaunchInfo, extractVersionFromCommandLine, parseSelfVersion, type DshLaunchInfo } from './launchInfo'
 import { appendDecisionLog, LOOPBACK_HOST } from './paths'
 import { mintSessionCookie, readCredentialsSecret, startAuthProxy, type AuthProxyHandle } from './authProxy'
 
@@ -216,6 +216,20 @@ export class DshRuntime extends EventEmitter {
   private lastLaunchLogFile: string | null = null
   /** ADR-22: step2 external-takeover command line (≤300 chars), for the degraded card. */
   private externalCommandLine: string | null = null
+  /**
+   * 0.1.18 ADR-48: external 接管会话的间接版本事实（adopt 落点装配，§3.3）。
+   * memory-only —— 与 externalCommandLine 同类，注册表（instance.json）不落盘；
+   * per-attach 重置，前一次接管的版本事实绝不泄漏进本次快照。null = 非
+   * external 会话 / 尚未装配。
+   */
+  private externalVersionFacts: {
+    /** npx 缓存整根只读扫描的 newest 候选版本（扫描失败/无候选 → null）。 */
+    dirVersion: string | null
+    /** dirVersion 的来源标注（buildExternalVersionNote 文案单点；无版本 → null）。 */
+    note: string | null
+    /** externalCommandLine 原文 semver 版本（step1 re-adopt 无命令行 → 恒 null）。 */
+    cmdlineVersion: string | null
+  } | null = null
   /** ADR-22: the last assembled DshLaunchInfo snapshot (null = never assembled). */
   private launchInfoSnapshot: DshLaunchInfo | null = null
   // ---- 0.1.14 ADR-30 state (all memory-only; D3: NOTHING here is persisted) ----
@@ -299,6 +313,15 @@ export class DshRuntime extends EventEmitter {
         // 0.1.14 第 16 个可选字段：token 契约档（T 路径）的带 token 直达 URL；
         // legacy/降级快照恒 null（null = 旧契约，不会破坏既有 15 字段消费者）。
         externalUrl: managed ? this.externalUrl : null,
+        // 0.1.18 ADR-48：external 接管会话的间接版本事实（adopt 落点装配，
+        // memory-only 与 externalCommandLine 同类）。仅 adopt 落点透传——
+        // user-stop / disconnect / managed 落点恒 null（§7.2 矩阵第 4 行，
+        // 放宽不外溢；external 会话中途断开同样不携带版本事实）。
+        // buildLaunchInfo 内部以 degradedLaunchMode 再做同语义把关（双保险，
+        // 纯函数直测面）。
+        externalDshVersion: args.kind === 'adopt' ? (this.externalVersionFacts?.dirVersion ?? null) : null,
+        externalDshVersionNote: args.kind === 'adopt' ? (this.externalVersionFacts?.note ?? null) : null,
+        externalCmdlineVersion: args.kind === 'adopt' ? (this.externalVersionFacts?.cmdlineVersion ?? null) : null,
         launchLogFile: managed ? logFile : null,
         degraded: !managed,
         degradedLaunchMode: args.kind === 'user-stop' ? 'start' : args.kind === 'disconnect' ? null : undefined,
@@ -358,6 +381,10 @@ export class DshRuntime extends EventEmitter {
     this.lastResolved = null
     this.lastLaunchLogFile = null
     this.externalCommandLine = null
+    // 0.1.18 ADR-48: the previous attachment's external version facts must
+    // never leak into this one's snapshots (same per-attach rule as
+    // externalCommandLine — memory-only, registry-unpersisted).
+    this.externalVersionFacts = null
     // 0.1.14 ADR-30 per-attach reset: the previous attachment's proxy/session
     // facts must never leak (a fresh managed launch re-judges the contract).
     this.contract = 'unknown'
@@ -776,6 +803,12 @@ export class DshRuntime extends EventEmitter {
     this.port = port
     this.managedBy = managedBy
     this.dshPid = pid
+    // 0.1.18 ADR-48 (§3.3): external 接管路径在快照装配前完成只读版本扫描 +
+    // 命令行版本提取。step1 re-adopt 场景 externalCommandLine 为 null（start()
+    // 开头 per-attach 重置且注册表不落盘）→ 命令行版本恒 null，目录版本仍可得
+    // （扫描不依赖命令行）；step4 等待后接管的 adopt 无命令行 → 仅目录版本。
+    // managed-own / extension 接管不装配（三字段维持 null，语义分离）。
+    if (managedBy === 'external') this.assembleExternalVersionFacts()
     // ADR-22: assemble the snapshot BEFORE the ready-state emit so subscribers
     // never observe a stale snapshot; writeRegistry (right after, at every
     // call site) re-assembles with the authoritative fresh record. rec = null:
@@ -837,6 +870,42 @@ export class DshRuntime extends EventEmitter {
     this.errorMessage = ADOPT_SESSION_UNAVAILABLE_MESSAGE
     this.setState('error')
     this.emit('error', this.errorMessage)
+  }
+
+  /**
+   * 0.1.18 ADR-48 (§3.3): assemble the external-takeover version facts at the
+   * adopt landing point (before the snapshot assembly):
+   *  - S2 主源 = scanNpxCacheReadonly()（npxRoot() 整根只读扫描，µs 级；无网络、
+   *    无安装、无 meta 写入——dshResolver 只读契约）。无候选/目录不可读 →
+   *    dirVersion=null + note=null（诚实降级，详情卡维持「版本未知」）。
+   *  - S1 = extractVersionFromCommandLine(this.externalCommandLine)（条件可得：
+   *    用户启动 spec 含精确版本时命中；step1 re-adopt / step4 无命令行 → null）。
+   * 扫描失败（异常，契约外防御分支）→ 三字段 null + rlog 留痕（非阻塞，不抛
+   * 出——launchInfo 装配失败绝不破坏生命周期）。仅命令行可得（仅命令行象限，
+   * §7.2 矩阵第 3 行）→ externalDshVersion/Note 为 null、cmdlineVersion 透传。
+   */
+  private assembleExternalVersionFacts(): void {
+    try {
+      const scan = scanNpxCacheReadonly()
+      const cmdlineVersion = extractVersionFromCommandLine(this.externalCommandLine)
+      const dirVersion = scan?.version ?? null
+      this.externalVersionFacts = {
+        dirVersion,
+        note: buildExternalVersionNote(dirVersion, scan?.candidateCount ?? 0),
+        cmdlineVersion,
+      }
+      rlog(
+        `adopt external version facts (0.1.18 ADR-48, readonly scan): dir=${dirVersion ?? 'null'} ` +
+          `(candidates=${scan?.candidateCount ?? 0}), cmdline=${cmdlineVersion ?? 'null'}` +
+          (dirVersion !== null && cmdlineVersion !== null && dirVersion !== cmdlineVersion
+            ? ' (MISMATCH: the display layer renders the ADR-48 warning line)'
+            : ''),
+      )
+    } catch (err) {
+      // 扫描/提取失败非阻塞：三字段 null + rlog 留痕（诚实降级，不抛出）。
+      this.externalVersionFacts = null
+      rlog(`adopt external version facts failed (ignored, three fields -> null): ${(err as Error).message}`)
+    }
   }
 
   /**

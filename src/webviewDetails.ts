@@ -44,7 +44,16 @@ export class DshDetailsProvider implements vscode.WebviewViewProvider {
   /** A state change landed since the last render (or the view was re-resolved). */
   private dirty = true
 
-  constructor(private readonly runtime: DshRuntime) {
+  constructor(
+    private readonly runtime: DshRuntime,
+    /**
+     * 0.1.18 落点 3: the EXTENSION's own version (activate reads
+     * `context.extension.packageJSON.version`，容错 null)。经渲染选项通道进入
+     * 详情卡（插件版本行全相位可见）；插件版本不是 dsh 启动事实，不进
+     * DshLaunchInfo。
+     */
+    private readonly extVersion: string | null = null,
+  ) {
     runtime.on('state', () => {
       this.dirty = true
       this.renderIfVisible()
@@ -101,6 +110,7 @@ export class DshDetailsProvider implements vscode.WebviewViewProvider {
       launching: state === 'starting' && info !== null,
       cspSource: view.webview.cspSource,
       configChannel: info !== null ? cfgChannel : null,
+      extVersion: this.extVersion,
     })
     this.dirty = false
     void view.webview.postMessage({ type: 'launchInfo', info })
