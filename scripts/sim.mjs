@@ -119,6 +119,8 @@
 // against a block-start failures baseline (family-local count) instead of the
 // global counter — the old global reading mislabeled cross-family failures as
 // the family's own regression.
+// 0.1.22 publish round (deploy r1): PU-9③d 0.1.21 → 0.1.22 moved in step with
+// the version bump (chain tail 8ee404f, design §十二 item 12).
 // 0.1.18 fix round (F1-F5, per docs/0.1.18问题分析 §5.1): F1 mock lifecycle
 // isolation (the multi-window kill path restores the mock right after the
 // block; P0-I-2/3 seeds its OWN live mock on 45680 so no block inherits a dead
@@ -3817,7 +3819,7 @@ async function main() {
     check('PU-9③c dsh.chooseChannel 命令注册 + activationEvents（QuickPick 重入口可达）',
       Array.isArray(pkgSim.contributes.commands) && pkgSim.contributes.commands.some((c) => c.command === 'dsh.chooseChannel') &&
       Array.isArray(pkgSim.activationEvents) && pkgSim.activationEvents.includes('onCommand:dsh.chooseChannel'))
-    check('PU-9③d 版本 0.1.21（发布单点；0.1.21 轮 package.json 随多窗口重复拉起/通道重启生效修复发布递增，基线对齐）', pkgSim.version === '0.1.21')
+    check('PU-9③d 版本 0.1.22（发布单点；0.1.22 轮 package.json 随禁用自动启动与定期自动重连发布递增，基线对齐）', pkgSim.version === '0.1.22')
     check('PU-9④ 回归聚合检查：PU-1..8 + PP-8 全族此前没有失败', failures === 0)
 
     // ==================== 0.1.15 additions (#88/#92, design §8.1/§8.2/§8.1b) ==
