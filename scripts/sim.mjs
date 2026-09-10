@@ -1876,17 +1876,16 @@ async function main() {
       await rRel.start()
       const spawnsBefore6b = router.calls.filter((c) => c.kind === 'launch').length
       globalThis.fetch = failFetch
-      const t6b = Date.now()
-      let relaunched = false
-      while (Date.now() - t6b < 5000) {
-        await sleep(100)
-        if (router.calls.filter((c) => c.kind === 'launch').length > spawnsBefore6b) { relaunched = true; break }
-      }
-      globalThis.fetch = okFetch // let the in-flight relaunch converge
-      await sleep(700)
-      check('PP-2-6b death in direct mode -> bounded relaunch happens (pre-0.1.9 semantics intact)', relaunched)
-      check('PP-2-6b relaunch converges back to ready', rRel.state === 'ready')
+      // 0.1.22（O-22-a 定稿 / §七 PP-2-6 行）：direct 死亡不再 bounded relaunch——
+      // 如实进入停止态（零 spawn）+ rlog 留 not-auto-relaunching 锚 + attached 复位
+      //（DR-22-10/V3-1 死亡分支②清理链）。
+      await sleep(600) // >= 3 probe ticks at 50ms
+      check('PP-2-6b death in direct mode -> stopped, NO relaunch (0.1.22: bounded relaunch cancelled per user policy 2026-09-10)',
+        rRel.state === 'stopped' && router.calls.filter((c) => c.kind === 'launch').length === spawnsBefore6b)
+      check('PP-2-6b attached reset on the death cleanup chain (DR-22-10/V3-1)', rRel.attached === false)
       check('PP-2-6b no user-stop trace in direct mode (branch gated on launchMode=start)', !rlogSlice(off6b).includes('treated as user stop per ADR-21'))
+      check('PP-2-6b rlog carries the not-auto-relaunching direct anchor (user policy 2026-09-10)',
+        rlogSlice(off6b).includes('probe: direct-mode dsh died; not auto-relaunching'))
       rRel.dispose()
 
       // ---- PP-2-7: custom command stays direct (legacy boundary) ----
@@ -2001,7 +2000,9 @@ async function main() {
       return !h.includes('<img src=x onerror=alert(1)>') && h.includes('bin 目录版本：v&lt;img src=x onerror=alert(1)&gt;')
     })())
     check('PU-4⑤ empty phase card: dsh 未就绪 + 启动完成后提示 (no fake skeleton data)', (() => { const h = buildDetailsHtml(null, 'empty'); return h.includes('dsh 未就绪') && h.includes('正在启动 dsh') && !h.includes('id="version-big"') })())
-    check('PU-4⑥ error phase card: dsh 启动失败 + full message + retry action', (() => { const h = buildDetailsHtml(null, 'error', { errorMessage: 'boom after 90s' }); return h.includes('dsh 启动失败') && h.includes('boom after 90s') && h.includes('重试（重启 dsh）') })())
+    // 0.1.22 V3-3（§4.5b 第 3 条）sanctioned 改写：error 相位按钮组改「启动 dsh（重试）」+「重连」
+    // 双按钮（data-action="start"/"reconnect"，不含 restart）。
+    check('PU-4⑥ error phase card: dsh 启动失败 + full message + 启动 dsh（重试）/重连双按钮（0.1.22 V3-3）', (() => { const h = buildDetailsHtml(null, 'error', { errorMessage: 'boom after 90s' }); return h.includes('dsh 启动失败') && h.includes('boom after 90s') && h.includes('data-action="start">启动 dsh（重试）') && h.includes('data-action="reconnect">重连') && !h.includes('data-action="restart">重试') })())
 
     // ---- PU-5: statusLine four states ----
     px('PU-5 statusLine: version segment only when a version fact exists')
@@ -3617,9 +3618,9 @@ async function main() {
     check('PP-8-3⑨ 重取边界：×2 仍 ready（独立计数递增；单次重取不循环）',
       r2.state === 'ready' && r2.authFailures === 2 && r2.probeFailures === 0)
     await r2.probeTick()
-    check('PP-8-3⑩ 连续 401 ×3 → error 终态 + 「dsh 会话失效」指引文案（探测停摆、proxy 停摆）',
+    check('PP-8-3⑩ 连续 401 ×3 → error 终态 + 「dsh 会话失效」指引文案（探测停摆、proxy 停摆、attached 复位 DR-22-10/V3-1）',
       r2.state === 'error' && r2Error === 'dsh 会话失效——请重启服务（面板 ⟳ 或命令「DSH: Restart Runtime」；dsh 进程未停止）' &&
-      r2.errorMessage === r2Error && r2.probeTimer === null && r2.proxy === null)
+      r2.errorMessage === r2Error && r2.probeTimer === null && r2.proxy === null && r2.attached === false)
     await r2.probeTick()
     check('PP-8-3⑪ 无循环 / 不入崩溃回退与 ADR-21：error 态 probeTick 早退（计数冻结、probeFailures 恒 0、零重启 spawn）',
       r2.authFailures === 3 && r2.state === 'error' && r2.probeFailures === 0 &&
@@ -4021,6 +4022,7 @@ async function main() {
           rt.getLaunchInfo = () => null
           rt.setChannel = (c) => { rt.calls.push(`setChannel:${c}`); timeline.push(`setChannel:${c}`) }
           rt.start = async () => { rt.calls.push('start'); timeline.push('start') }
+          rt.attachExisting = async () => { rt.calls.push('attachExisting'); timeline.push('attachExisting') }
           rt.reconnect = async () => { rt.calls.push('reconnect'); timeline.push('reconnect') }
           rt.disconnect = () => { rt.calls.push('disconnect') }
           return rt
@@ -4057,8 +4059,8 @@ async function main() {
         const iWC10 = timeline.indexOf('update:channel="alpha"')
         const iSel10 = timeline.indexOf('update:channelSelected=true')
         const iSC10 = timeline.indexOf('setChannel:alpha')
-        const iStart10b = timeline.indexOf('start')
-        check('PP-10-4① 选择调用序：writeChannel → writeChannelSelected=true → runtime.setChannel → start（先选择通道、后启动dsh：start 严格晚于写入）',
+        const iStart10b = timeline.indexOf('attachExisting')
+        check('PP-10-4① 选择调用序：writeChannel → writeChannelSelected=true → runtime.setChannel → attachExisting（0.1.22：先选择通道、后连接——attach 严格晚于写入；只认领不拉起）',
           iWC10 > -1 && iSel10 > -1 && iSC10 > -1 && iStart10b > -1 && iWC10 < iSel10 && iSel10 < iSC10 && iSC10 < iStart10b)
         check('PP-10-4② 写入值：channel=alpha + channelSelected=true（切换器写入后首启页从结构上不再触发）',
           cfgStore.channel === 'alpha' && cfgStore.channelSelected === true)
@@ -4071,8 +4073,8 @@ async function main() {
         rtPick.calls.length = 0
         pickV.bag.handler({ type: 'chooseChannel', channel: null })
         await sleep(150)
-        check('PP-10-4④ 稍后再说（null 哨兵）：start（当前值）且零配置写入、不置 channelSelected（下次再问）',
-          rtPick.calls.includes('start') && cfgCalls.length === 0 && cfgStore.channelSelected === true &&
+        check('PP-10-4④ 稍后再说（null 哨兵）：attachExisting（当前值，只认领不拉起）且零配置写入、不置 channelSelected（下次再问）',
+          rtPick.calls.includes('attachExisting') && cfgCalls.length === 0 && cfgStore.channelSelected === true &&
           !rtPick.calls.some((c) => c.startsWith('setChannel')))
         cfgCalls.length = 0
         rtPick.calls.length = 0
@@ -4080,8 +4082,8 @@ async function main() {
         pickV.bag.handler({ type: 'chooseChannel', channel: 'next' })
         await sleep(150)
         failConfigWrite = false
-        check('PP-10-4⑤ 写失败诚实降级：沿用当前通道 start、不置 flag、零 setChannel（channelSelect 诚实降级先例同语义）',
-          rtPick.calls.includes('start') && !rtPick.calls.some((c) => c.startsWith('setChannel')) &&
+        check('PP-10-4⑤ 写失败诚实降级：沿用当前通道 attachExisting（只认领不拉起）、不置 flag、零 setChannel（channelSelect 诚实降级先例同语义）',
+          rtPick.calls.includes('attachExisting') && !rtPick.calls.some((c) => c.startsWith('setChannel')) &&
           !cfgCalls.includes('update:channelSelected=true') && cfgStore.channel === 'latest')
 
         // ---- PP-10-5: 切换器写入序（webviewDetails.ts setChannel）------------
@@ -4149,6 +4151,9 @@ async function main() {
         for (let i = exitListenersBefore; i < curExitListeners.length; i++) process.removeListener('exit', curExitListeners[i])
 
         // ---- PP-11-1②: 按钮全链（mock postMessage → 薄层 → executeCommand）----
+        // 0.1.22 O-22-e 拆分改写：面板脚本 ⟳ 不再发 restart（reconnect/start 双
+        // 上行）；ready 态 ⟳/▶ 按禁用矩阵置灰（guard 拦截）→ 负断言；stopped 态
+        // 双命令映射全链断言（DR-22-9 / §4.5b 第 7 条 sanctioned 改写）。
         const rtBtn = mkFakeRuntime('ready')
         const panelBtn = new WV.DshPanel(rtBtn)
         const btnV = mkFakeView()
@@ -4156,11 +4161,25 @@ async function main() {
         cmdCalls.length = 0
         btnV.bag.handler({ type: 'showDetails' })
         btnV.bag.handler({ type: 'openBrowser' })
-        btnV.bag.handler({ type: 'restart' })
         btnV.bag.handler({ type: 'stop' })
         await sleep(150)
-        check('PP-11-1② 4 按钮消息 → executeCommand 映射各命中一次（dsh.showDetails/openInBrowser/restart/stop；ready 态全放行）',
-          JSON.stringify(cmdCalls) === JSON.stringify(['dsh.showDetails', 'dsh.openInBrowser', 'dsh.restart', 'dsh.stop']))
+        check('PP-11-1② ready 态 3 按钮消息 → executeCommand 映射（showDetails/openBrowser/stop；⟳/▶ 禁用语义由负断言钉住）',
+          JSON.stringify(cmdCalls) === JSON.stringify(['dsh.showDetails', 'dsh.openInBrowser', 'dsh.stop']))
+        btnV.bag.handler({ type: 'reconnect' })
+        btnV.bag.handler({ type: 'start' })
+        await sleep(150)
+        check('PP-11-1②a ready 态 reconnect/start 消息 → guard 拦截（矩阵 ready 行 ⟳ 禁用 DR-22-9 + ▶ 禁用）、executeCommand 零新增',
+          JSON.stringify(cmdCalls) === JSON.stringify(['dsh.showDetails', 'dsh.openInBrowser', 'dsh.stop']))
+        const rtBtnStopped = mkFakeRuntime('stopped')
+        const panelBtnStopped = new WV.DshPanel(rtBtnStopped)
+        const btnVStopped = mkFakeView()
+        panelBtnStopped.resolveWebviewView(btnVStopped.view)
+        cmdCalls.length = 0
+        btnVStopped.bag.handler({ type: 'reconnect' })
+        btnVStopped.bag.handler({ type: 'start' })
+        await sleep(150)
+        check('PP-11-1②b stopped 态 reconnect/start 消息 → dsh.reconnect/dsh.start 双命令映射命中（拆分落点全链）',
+          JSON.stringify(cmdCalls) === JSON.stringify(['dsh.reconnect', 'dsh.start']))
 
         // ---- PP-11-2③④: extension 侧 guard 复算（正确性层）------------------
         const rtGuard = mkFakeRuntime('awaitingChannel')
@@ -4290,8 +4309,8 @@ async function main() {
       const known11 = buildPanelHtml('http://127.0.0.1:45678', CSP11, 'ready')
       const legacy11 = buildPanelHtml('http://127.0.0.1:45678')
       const script11 = extractScript(known11)
-      check('PU-11-1① 面板 4 按钮 id 完备（btn-details/btn-open/btn-restart/btn-stop）',
-        ['btn-details', 'btn-open', 'btn-restart', 'btn-stop'].every((id) => known11.includes(`id="${id}"`)))
+      check('PU-11-1① 面板 5 按钮 id 完备（btn-details/btn-open/btn-reconnect/btn-start/btn-stop；0.1.22 O-22-e 拆分 4→5 键）',
+        ['btn-details', 'btn-open', 'btn-reconnect', 'btn-start', 'btn-stop'].every((id) => known11.includes(`id="${id}"`)))
       check('PP-11-4① bind-first 文本序：4 按钮绑定 + 握手 post 均位于 typeof acquireVsCodeApi 检查之前（#90② 死区结构性消失）',
         (() => {
           const firstBind = script11.indexOf("btnD.addEventListener('click'")
@@ -4321,29 +4340,30 @@ async function main() {
       // PP-11-4②③: 白名单/详情卡映射交叉一致
       const PM11 = require('../out/panelMessages.js') // { PANEL_MESSAGE_TYPES, routePanelMessage, buttonDisableRules }
       const uplink11 = [...new Set([...script11.matchAll(/post\(\{ type: '([a-zA-Z]+)'/g)].map((m) => m[1]))].sort()
-      check('PP-11-4② PANEL_MESSAGE_TYPES 白名单 ≡ 面板脚本上行 type 集合（7 条交叉一致；setChannel 不入会话面板白名单）',
-        JSON.stringify(uplink11) === JSON.stringify([...PM11.PANEL_MESSAGE_TYPES].sort()) && PM11.PANEL_MESSAGE_TYPES.length === 7)
+      check('PP-11-4② PANEL_MESSAGE_TYPES 白名单 ≡ 面板脚本上行 type 集合（0.1.22 O-22-e 拆分：7→8 条交叉一致，restart→reconnect + start 新增；setChannel 不入会话面板白名单）',
+        JSON.stringify(uplink11) === JSON.stringify([...PM11.PANEL_MESSAGE_TYPES].sort()) && PM11.PANEL_MESSAGE_TYPES.length === 8)
       const cardTypes11 = [...new Set([...cardScript11.matchAll(/post\(\{ type: '([a-zA-Z]+)'/g)].map((m) => m[1]))].sort()
       const detailsSrc11 = fs.readFileSync(path.join(process.cwd(), 'src', 'webviewDetails.ts'), 'utf8')
       const caseTypes11 = [...new Set([...detailsSrc11.matchAll(/case '([a-zA-Z]+)'/g)].map((m) => m[1]))].sort()
-      check('PP-11-4③ 详情卡脚本 type 集合 ≡ webviewDetails.ts onMessage case 集合（问题 9 双向覆盖；restart/setChannel 在两组）',
-        JSON.stringify(cardTypes11) === JSON.stringify(caseTypes11) && cardTypes11.includes('restart') && cardTypes11.includes('setChannel'))
+      check('PP-11-4③ 详情卡脚本 type 集合 ≡ webviewDetails.ts onMessage case 集合（0.1.22 O-22-e 拆分：reconnect/start 双侧入组；restart 保留为 ready 相位「重启 dsh」+ setChannel 在两组）',
+        JSON.stringify(cardTypes11) === JSON.stringify(caseTypes11) && cardTypes11.includes('restart') &&
+        cardTypes11.includes('reconnect') && cardTypes11.includes('start') && cardTypes11.includes('setChannel'))
       // PP-10-1⑤ 静态补强：runtime emit 面零扩张
       const rtSrc11 = fs.readFileSync(path.join(process.cwd(), 'src', 'runtime.ts'), 'utf8')
       const emitKinds11 = [...new Set([...rtSrc11.matchAll(/this\.emit\('([a-zA-Z]+)'/g)].map((m) => m[1]))].sort()
       check('PP-10-1⑤ 静态：runtime emit 面零扩张（仅 state/error；无 notifySurfaceChange 类机制）',
         JSON.stringify(emitKinds11) === '["error","state"]' && !rtSrc11.includes('notifySurfaceChange'))
-      // PP-11-2①②: 禁用矩阵逐格（纯函数直测；§5.6 全格）
+      // PP-11-2①②: 禁用矩阵逐格（纯函数直测；0.1.22 O-22-e 五键矩阵全格）
       const M11 = (s) => PM11.buttonDisableRules(s)
-      check('PP-11-2① §5.6 禁用矩阵逐格（五态 × 4 按钮；true = disabled；starting 的 ■ 可点 = 取消启动）',
-        JSON.stringify(M11('awaitingChannel')) === JSON.stringify({ details: false, openBrowser: true, restart: true, stop: true }) &&
-        JSON.stringify(M11('starting')) === JSON.stringify({ details: false, openBrowser: true, restart: true, stop: false }) &&
-        JSON.stringify(M11('ready')) === JSON.stringify({ details: false, openBrowser: false, restart: false, stop: false }) &&
-        JSON.stringify(M11('error')) === JSON.stringify({ details: false, openBrowser: true, restart: false, stop: false }) &&
-        JSON.stringify(M11('stopped')) === JSON.stringify({ details: false, openBrowser: true, restart: false, stop: true }))
+      check('PP-11-2① §4.5b 禁用矩阵逐格（五态 × 5 按钮；true = disabled；starting 的 ■ 可点 = 取消启动；ready 的 ⟳ 禁用（DR-22-9）+ ▶ 禁用；stopped/error 的 ⟳/▶ 双活）',
+        JSON.stringify(M11('awaitingChannel')) === JSON.stringify({ details: false, openBrowser: true, reconnect: true, start: true, stop: true }) &&
+        JSON.stringify(M11('starting')) === JSON.stringify({ details: false, openBrowser: true, reconnect: true, start: true, stop: false }) &&
+        JSON.stringify(M11('ready')) === JSON.stringify({ details: false, openBrowser: false, reconnect: true, start: true, stop: false }) &&
+        JSON.stringify(M11('error')) === JSON.stringify({ details: false, openBrowser: true, reconnect: false, start: false, stop: false }) &&
+        JSON.stringify(M11('stopped')) === JSON.stringify({ details: false, openBrowser: true, reconnect: false, start: false, stop: true }))
       check('PP-11-2② 未知/idle 态保守全禁（防御默认；无语义可信任时不放行任何按钮）',
-        JSON.stringify(M11('idle')) === JSON.stringify({ details: true, openBrowser: true, restart: true, stop: true }) &&
-        JSON.stringify(M11('no-such-state')) === JSON.stringify({ details: true, openBrowser: true, restart: true, stop: true }))
+        JSON.stringify(M11('idle')) === JSON.stringify({ details: true, openBrowser: true, reconnect: true, start: true, stop: true }) &&
+        JSON.stringify(M11('no-such-state')) === JSON.stringify({ details: true, openBrowser: true, reconnect: true, start: true, stop: true }))
       // PP-11-1①② + PP-11-3①②: routePanelMessage sinks 直测
       const hits11 = []
       const sinks11 = {
@@ -4351,17 +4371,19 @@ async function main() {
         stateAck: (s) => hits11.push(`stateAck:${s}`),
         showDetails: () => hits11.push('showDetails'),
         openBrowser: () => hits11.push('openBrowser'),
-        restart: () => hits11.push('restart'),
+        reconnect: () => hits11.push('reconnect'),
+        start: () => hits11.push('start'),
         stop: () => hits11.push('stop'),
         chooseChannel: (c) => hits11.push(`chooseChannel:${c === null ? 'null' : c}`),
         unknownType: (t) => hits11.push(`unknown:${t}`),
       }
       PM11.routePanelMessage({ type: 'showDetails' }, sinks11)
       PM11.routePanelMessage({ type: 'openBrowser' }, sinks11)
-      PM11.routePanelMessage({ type: 'restart' }, sinks11)
+      PM11.routePanelMessage({ type: 'reconnect' }, sinks11)
+      PM11.routePanelMessage({ type: 'start' }, sinks11)
       PM11.routePanelMessage({ type: 'stop' }, sinks11)
-      check('PP-11-1① 面板 4 型路由 → sinks 各命中一次（路由映射单点；映射命令入口见 PP-11-1②）',
-        JSON.stringify(hits11) === JSON.stringify(['showDetails', 'openBrowser', 'restart', 'stop']))
+      check('PP-11-1① 面板 5 型路由 → sinks 各命中一次（0.1.22 拆分映射单点：reconnect/start 双入口；映射命令入口见 PP-11-1②）',
+        JSON.stringify(hits11) === JSON.stringify(['showDetails', 'openBrowser', 'reconnect', 'start', 'stop']))
       hits11.length = 0
       PM11.routePanelMessage({ type: 'webviewReady' }, sinks11)
       PM11.routePanelMessage({ type: 'stateAck', appliedState: 'ready' }, sinks11)

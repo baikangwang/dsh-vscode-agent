@@ -243,6 +243,21 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       await runtime?.reconnect()
       await openPanel()
     }),
+    vscode.commands.registerCommand('dsh.reconnect', async () => {
+      // 重连 = attachExisting 只认领不拉起（O-22-e 拆分，DR-22-9）；无实例诚实提示。
+      const ok = runtime ? await runtime.attachExisting() : false
+      if (!ok) {
+        void vscode.window.showInformationMessage(
+          '当前没有运行中的 dsh 实例；可点 ▶ 启动，或等待自动发现（默认 30 秒周期）。',
+        )
+      }
+      await openPanel()
+    }),
+    vscode.commands.registerCommand('dsh.start', async () => {
+      // 启动 = start() 四步仲裁既有语义（DR-22-8：有实例先认领含外部，无实例拿锁拉起）。
+      await runtime?.start()
+      await openPanel()
+    }),
     vscode.commands.registerCommand('dsh.stop', async () => {
       // Disconnect semantics (P0-D): detach without killing dsh.
       runtime?.disconnect()
@@ -376,13 +391,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   // Auto start on first window; subsequent windows adopt the running instance.
   // 0.1.15 #83: channelSelected=false → awaitingChannel (no start — the panel
-  // pick card owns the launch); otherwise the pre-0.1.15 auto-start unchanged.
+  // pick card owns the launch); otherwise attach-only (0.1.22: NO auto-launch —
+  // attachExisting re-adopts a running instance only, never spawns; a missed
+  // attach lands in the stopped state where the discovery probe (§4.2) keeps
+  // re-adopting automatically per the probe interval, user policy 2026-09-10).
   if (cfg.autoStart) {
     const channelSelected = vscode.workspace.getConfiguration('dsh').get<boolean>('channelSelected', false)
     if (!channelSelected) {
       runtime.enterAwaitingChannel()
     } else {
-      void runtime.start().then(() => {
+      void runtime.attachExisting().then(() => {
         if (cfg.autoOpenPanel && runtime?.state === 'ready') void openPanel()
       })
     }

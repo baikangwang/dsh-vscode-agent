@@ -8,11 +8,13 @@
 // and the disable matrix; this layer re-computes the rules from the CURRENT
 // runtime state on every message (correctness layer — never trusts the
 // script-side `disabled`) and consumes the routing result into the EXISTING
-// executeCommand surface (dsh.showDetails/dsh.openInBrowser/dsh.restart/dsh.stop
-// zero change). Unknown types are a logged no-op (PP-11-3).
+// executeCommand surface (dsh.showDetails/dsh.openInBrowser/dsh.reconnect/
+// dsh.start/dsh.stop — 0.1.22 O-22-e split; zero semantic drift). Unknown
+// types are a logged no-op (PP-11-3).
 // 0.1.15 #83: the chooseChannel uplink writes dsh.channel + dsh.channelSelected
-// (in that order, channelSelect normalization) and THEN starts the runtime
-// (先选择通道、后启动dsh: start strictly after the writes; PP-10-4).
+// (in that order, channelSelect normalization) and THEN attaches the runtime
+// (0.1.22: 先选择通道、后连接 — attachExisting strictly after the writes;
+// attach-only, never an automatic spawn).
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as vscode from 'vscode'
@@ -131,12 +133,21 @@ export class DshPanel implements vscode.WebviewViewProvider {
           }
           void vscode.commands.executeCommand('dsh.openInBrowser')
         },
-        restart: () => {
-          if (guard.restart) {
-            panelLog(`drop restart (state guard: ${this.runtime.state})`)
+        reconnect: () => {
+          // 0.1.22 O-22-e 拆分：⟳ = 重连（只认领不拉起）→ dsh.reconnect。
+          if (guard.reconnect) {
+            panelLog(`drop reconnect (state guard: ${this.runtime.state})`)
             return
           }
-          void vscode.commands.executeCommand('dsh.restart')
+          void vscode.commands.executeCommand('dsh.reconnect')
+        },
+        start: () => {
+          // 0.1.22 O-22-e 拆分：▶ = 启动（四步仲裁）→ dsh.start。
+          if (guard.start) {
+            panelLog(`drop start (state guard: ${this.runtime.state})`)
+            return
+          }
+          void vscode.commands.executeCommand('dsh.start')
         },
         stop: () => {
           if (guard.stop) {
@@ -209,15 +220,19 @@ export class DshPanel implements vscode.WebviewViewProvider {
   /**
    * 0.1.15 #83: the awaitingChannel pick-card uplink. Write order is FIXED
    * (PP-10-4): dsh.channel → dsh.channelSelected=true → setChannel on the
-   * runtime → start() (先选择通道、后启动dsh: start strictly AFTER the writes). `null` =
-   * the 「稍后再说」 sentinel: start with the CURRENT channel, flag NOT set
+   * runtime → attachExisting() (0.1.22 改动点 4: 先选择通道、后连接——attach
+   * strictly AFTER the writes; 只认领不拉起，不自动启动). `null` = the
+   * 「稍后再说」 sentinel: attach with the CURRENT channel, flag NOT set
    * (asked again next launch). A config-write failure keeps the current value
-   * and still starts (channelSelect honest-degradation precedent, §2.3-④).
+   * and still attaches (channelSelect honest-degradation precedent, §2.3-④).
+   * All three exits are attach-only: a running instance is re-adopted
+   * immediately (zero spawn); no instance → the stopped state (the discovery
+   * probe / ▶ take over, never an automatic spawn).
    */
   private async onChooseChannel(channel: string | null): Promise<void> {
     if (channel === null) {
-      panelLog('recv chooseChannel=null (稍后再说); starting with the CURRENT channel; channelSelected NOT set')
-      void this.runtime.start()
+      panelLog('recv chooseChannel=null (稍后再说); attach-only with the CURRENT channel; channelSelected NOT set')
+      void this.runtime.attachExisting()
       return
     }
     const norm = normalizeChannel(channel)
@@ -229,13 +244,13 @@ export class DshPanel implements vscode.WebviewViewProvider {
       await config.update('channel', norm.channel, vscode.ConfigurationTarget.Global)
       await config.update('channelSelected', true, vscode.ConfigurationTarget.Global)
     } catch (err) {
-      panelLog(`chooseChannel: config write failed (${(err as Error).message}); starting with the CURRENT channel (honest degradation; channelSelected NOT set)`)
-      void this.runtime.start()
+      panelLog(`chooseChannel: config write failed (${(err as Error).message}); attach-only with the CURRENT channel (honest degradation; channelSelected NOT set)`)
+      void this.runtime.attachExisting()
       return
     }
     this.runtime.setChannel(norm.channel)
-    panelLog(`chooseChannel: wrote channel='${norm.channel}' + channelSelected=true; starting the runtime (先选择通道、后启动dsh: start AFTER the writes)`)
-    void this.runtime.start()
+    panelLog(`chooseChannel: wrote channel='${norm.channel}' + channelSelected=true; attaching the runtime (先选择通道、后连接: attach AFTER the writes; no auto-launch)`)
+    void this.runtime.attachExisting()
   }
 
   /** Clear the pending ack timeout, if any. */

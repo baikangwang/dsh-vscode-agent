@@ -34,6 +34,8 @@ type DetailsMessage =
   | { type: 'openPath'; path?: string; kind?: 'dir' | 'file' }
   | { type: 'updateRuntime' }
   | { type: 'restart' }
+  | { type: 'reconnect' } // 0.1.22 O-22-e 拆分：stopped/error 相位「重连」→ dsh.reconnect
+  | { type: 'start' } // 0.1.22 O-22-e 拆分：stopped/error 相位「启动」→ dsh.start
   | { type: 'openPanel' }
   | { type: 'setChannel'; channel?: string } // 0.1.15 #84: the ready-card switcher uplink
   | { type: 'applyChannelRestart' } // 0.1.21 改动点 4: 「立即重启以生效」上行（受管受控杀重拉 / 外部不代杀指引）
@@ -156,6 +158,14 @@ export class DshDetailsProvider implements vscode.WebviewViewProvider {
         break
       case 'restart':
         void vscode.commands.executeCommand('dsh.restart')
+        break
+      case 'reconnect':
+        // 0.1.22 O-22-e 拆分：重连 = 只认领运行实例（零 spawn，DR-22-9）。
+        void vscode.commands.executeCommand('dsh.reconnect')
+        break
+      case 'start':
+        // 0.1.22 O-22-e 拆分：启动 = start() 四步仲裁（DR-22-8）。
+        void vscode.commands.executeCommand('dsh.start')
         break
       case 'applyChannelRestart':
         // 0.1.21 改动点 4: 「立即重启以生效」→ dsh.applyChannel（语义分离于

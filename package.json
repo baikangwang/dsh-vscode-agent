@@ -19,6 +19,8 @@
     "onCommand:dsh.open",
     "onCommand:dsh.showDetails",
     "onCommand:dsh.restart",
+    "onCommand:dsh.reconnect",
+    "onCommand:dsh.start",
     "onCommand:dsh.stop",
     "onCommand:dsh.openInBrowser",
     "onCommand:dsh.updateRuntime",
@@ -69,6 +71,14 @@
       {
         "command": "dsh.restart",
         "title": "DSH: Restart Runtime"
+      },
+      {
+        "command": "dsh.reconnect",
+        "title": "DSH: 重连 dsh（只认领运行实例）"
+      },
+      {
+        "command": "dsh.start",
+        "title": "DSH: 启动 dsh"
       },
       {
         "command": "dsh.stop",
@@ -130,7 +140,7 @@
         "dsh.autoStart": {
           "type": "boolean",
           "default": true,
-          "description": "VSCode 启动时自动启动（第一窗口）或复用（后续窗口）dsh。"
+          "description": "VSCode 启动时自动重连（复用）运行中的 dsh，不自动启动新实例（0.1.22：无运行实例时进入停止态，等待自动发现或手动 ▶ 启动；自动的只有重连）。"
         },
         "dsh.autoOpenPanel": {
           "type": "boolean",

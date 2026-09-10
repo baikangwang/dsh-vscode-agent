@@ -291,6 +291,18 @@ export class DshRuntime extends EventEmitter {
   private sessionRetried = false
   /** §3.5: the independent 401 counter (isolated from probeFailures / ADR-21). */
   private authFailures = 0
+  /**
+   * 0.1.22 改动点 3（设计 §4.2）：停止态发现探活器——stopped 态专属的低频发现
+   * 定时器。生命周期严格绑定 stopped 态（setState 挂钩：进入即武装、离开即
+   * 拆除，DR-22-3——停止态进入点多，逐落点手工武装必然漏挂）；周期沿用
+   * dsh.probeIntervalSec（O-22-c 已裁决沿用，=0 时一并关闭、配置语义单一）。
+   * 认领路径只到达 adopt()，结构性不含 launchManaged()（零 spawn 红线，§4.2
+   * 第 4 条，PU-22-4 静态断言钉住）。与既有存活探活器（probeTimer）语义分离
+   * （DR-2）：发现探测 = 发现即认领，无失败计数、无判死阈值。
+   */
+  private discoveryTimer: ReturnType<typeof setInterval> | null = null
+  /** 防重入标志：discoveryTick 的认领是异步链，在途时不重复发起（§4.2 第 3 条）。 */
+  private discoveryInFlight = false
 
   constructor(options: RuntimeOptions) {
     super()
@@ -304,6 +316,10 @@ export class DshRuntime extends EventEmitter {
     if (this.state === s) return
     const prev = this.state
     this.state = s
+    // 0.1.22（设计 §4.2 第 1 条 / DR-22-3）：发现探活器生命周期严格绑定 stopped
+    // 态——进入即武装、离开即拆除（状态机单点挂钩，防逐落点手工武装漏挂）。
+    if (s === 'stopped') this.startDiscoveryProbe()
+    else this.stopDiscoveryProbe()
     rlog(`state: ${prev} -> ${s}${this.errorMessage ? ` (error: ${this.errorMessage})` : ''}`)
     this.emit('state', s)
   }
@@ -411,9 +427,14 @@ export class DshRuntime extends EventEmitter {
     return this.contract
   }
 
-  /** Called once per extension activation: re-adopt / adopt / managed-launch. */
-  async start(): Promise<void> {
-    if (this.attached || this.state === 'ready') return
+  /**
+   * 0.1.22 改动点 1（设计 §4.1 第 2 条）：per-attach 重置段（原 start() 开头）
+   * 抽取共用——start() 与 attachExisting() 的附着起点执行同一份重置（附着记忆
+   * 防泄漏纪律：0.1.21 改动点 3/5 的 per-attach 规则对新路径同等生效）。
+   * 逐字搬移，行为零变化；startLaunchFailures 仍不在此重置（session-scoped
+   * fallback，§4.6.6）。
+   */
+  private beginAttachment(): void {
     this.attached = true
     this.stopRequested = false
     this.dshPid = null
@@ -447,9 +468,16 @@ export class DshRuntime extends EventEmitter {
     this.sessionRetried = false
     this.authFailures = 0
     this.stopProxy()
-    this.setState('starting')
-    rlog(`start: window ${this.options.windowPid} (port=${this.options.port} channel=${this.options.channel} command=${this.options.command || '<npx>'})`)
+  }
 
+  /**
+   * 0.1.22 改动点 1（设计 §4.1 第 1 条）：start() 的 step1（注册表复用认领）+
+   * step2（配置端口探测认领）逐字抽取为共享私有方法——start() 与
+   * attachExisting() 消费同一发现判定（DR-22-1：认领链只此一份）。返回是否
+   * 完成认领（true = 已认领且存活探活器已武装；false = 无实例可认领）。
+   * 逻辑与全部 rlog 锚逐字保留，start() 行为零变化（纯结构抽取）。
+   */
+  private async tryAdoptExisting(): Promise<boolean> {
     // 1. Registry: a live managed-own/extension/external dsh we already know?
     const inst = readInstance()
     const registryAlive = dshAlive(inst)
@@ -469,7 +497,7 @@ export class DshRuntime extends EventEmitter {
       await this.adopt(inst.dsh.port, inst.dsh.pid, inst.dsh.managedBy, registryProbeKind, inst.dsh)
       await this.writeRegistry()
       this.startProbe()
-      return
+      return true
     }
     if (inst.dsh && inst.dsh.pid !== null && isAlive(inst.dsh.pid) && !registryProbed) {
       rlog(`step1: 疑似上轮残留 detached dsh pid=${inst.dsh.pid} port=${inst.dsh.port}（probe 失败但 pid 存活）；按注册表引导排查`)
@@ -517,7 +545,7 @@ export class DshRuntime extends EventEmitter {
             await this.adopt(probePort, holder.pid, 'managed-own', probeKind?.kind ?? null, rec)
             await this.writeRegistry()
             this.startProbe()
-            return
+            return true
           }
         } else {
           // CIM unavailable: the page probe already verified the __DSH_BOOT__
@@ -535,8 +563,47 @@ export class DshRuntime extends EventEmitter {
       await this.adopt(probePort, pid, 'external', probeKind?.kind ?? null, inst.dsh)
       await this.writeRegistry()
       this.startProbe()
-      return
+      return true
     }
+    return false
+  }
+
+  /**
+   * 0.1.22 改动点 2（设计 §4.1 第 3 条）：只附着、不拉起——激活链（dsh.autoStart
+   * 语义收敛）与面板选通道流程 / dsh.reconnect 命令的 runtime 落点。复用
+   * beginAttachment() 的 per-attach 重置（附着记忆防泄漏纪律对新路径同等生效）
+   * 与 tryAdoptExisting() 的发现判定（DR-22-1：认领链只此一份）。无实例可认领
+   * 时如实进入停止态（零 spawn，结构性不调用 launchManaged），由停止态发现
+   * 探活器（§4.2）接力自动重连。返回是否已处于附着/就绪。
+   */
+  async attachExisting(): Promise<boolean> {
+    if (this.attached || this.state === 'ready') return true
+    this.beginAttachment()
+    this.setState('starting')
+    rlog(`attachExisting: window ${this.options.windowPid} (port=${this.options.port} channel=${this.options.channel}) — attach-only, no launch`)
+    const adopted = await this.tryAdoptExisting()
+    if (adopted) return true
+    // 无实例可认领：如实进入停止态（不 spawn），由停止态发现探活接力（§4.2）。
+    // V3-1/DR-22-10（落点 #1）：失败路径必须复位 attached（beginAttachment 已置
+    // true）——与 start() step4 失败先例（先复位后落态）同型；不复位则本方法
+    // 残留 attached=true，▶ dsh.start 被 start() 入口守卫拦截、⟳ 重连被本方法
+    // 守卫谎报成功，双向失效（QA v3-r1 V3-1）。
+    this.stopProxy()
+    this.attached = false
+    this.setState('stopped')
+    rlog('attachExisting: no running dsh found; entering stopped (no auto-launch per user policy 2026-09-10)')
+    return false
+  }
+
+  /** Called once per extension activation: re-adopt / adopt / managed-launch.
+   *  0.1.22：per-attach 重置与 step1/step2 已抽取为 beginAttachment() /
+   *  tryAdoptExisting()（设计 §4.1 第 1/2 条，纯结构抽取，行为零变化）。 */
+  async start(): Promise<void> {
+    if (this.attached || this.state === 'ready') return
+    this.beginAttachment()
+    this.setState('starting')
+    rlog(`start: window ${this.options.windowPid} (port=${this.options.port} channel=${this.options.channel} command=${this.options.command || '<npx>'})`)
+    if (await this.tryAdoptExisting()) return
 
     // 3. First-window path: atomic lock arbitration, then managed launch.
     const lock = acquireStartupLock(this.options.app)
@@ -549,7 +616,11 @@ export class DshRuntime extends EventEmitter {
 
     // 4. Another window is starting dsh: wait for it, then adopt.
     rlog('step4 another window is starting dsh; waiting…')
-    const adopted = await this.waitForExternalStartup(probePort > 0 ? probePort : 0)
+    // 0.1.22 结构抽取注：原代码引用 step2 局部变量 probePort（= options.port
+    // 归一化），step2 已抽取进 tryAdoptExisting——此处从 options 等价重算
+    //（probePort > 0 ? probePort : 0 ≡ probePort ≡ 本表达式），零行为偏离。
+    const cfgPort = this.options.port > 0 ? this.options.port : 0
+    const adopted = await this.waitForExternalStartup(cfgPort)
     if (adopted) return
     this.attached = false
     this.setState('error')
@@ -662,6 +733,9 @@ export class DshRuntime extends EventEmitter {
         }
         if (this.launchAttempts >= MAX_RESTARTS) {
           this.errorMessage = `dsh failed to start after ${MAX_RESTARTS} attempts (detached); last: ${msg}`
+          // 0.1.22 DR-22-10/V3-1（落点 #5）：进入 error 前 attached 复位（先复位
+          // 后落态，与 step4 失败先例同型）。
+          this.attached = false
           this.setState('error')
           this.emit('error', this.errorMessage)
           return
@@ -962,6 +1036,9 @@ export class DshRuntime extends EventEmitter {
   private enterSessionUnavailable(): void {
     this.stopProxy()
     this.errorMessage = ADOPT_SESSION_UNAVAILABLE_MESSAGE
+    // 0.1.22 DR-22-10/V3-1（落点 #6）：进入 error 前 attached 复位（adopt 会话
+    // 失败共用落点；与 step4 失败先例同型）。
+    this.attached = false
     this.setState('error')
     this.emit('error', this.errorMessage)
   }
@@ -1168,6 +1245,112 @@ export class DshRuntime extends EventEmitter {
     }
   }
 
+  /**
+   * 0.1.22 改动点 3（设计 §4.2 第 1/2 条）：发现探活器武装/拆除——形态与
+   * startProbe()/stopProbe() 同构。武装点统一在 setState('stopped') 挂钩
+   * （DR-22-3）；probeIntervalSec=0（既有「关闭探活」语义）时一并关闭。
+   */
+  private startDiscoveryProbe(): void {
+    this.stopDiscoveryProbe()
+    if (this.probeIntervalMs() <= 0 || this.state !== 'stopped') return
+    rlog(`discovery: armed every ${this.probeIntervalMs()}ms (stopped-state discovery; adopt-only, no launch)`)
+    this.discoveryTimer = setInterval(() => { void this.discoveryTick() }, this.probeIntervalMs())
+  }
+
+  private stopDiscoveryProbe(): void {
+    if (this.discoveryTimer !== null) {
+      clearInterval(this.discoveryTimer)
+      this.discoveryTimer = null
+    }
+  }
+
+  /**
+   * 0.1.22 改动点 3（设计 §4.2 第 3 条）：停止态发现探活 tick——候选发现与
+   * start() step1/step2 同源判定（顺序：注册表优先、端口探测兜底），命中后经
+   * discoveryAdopt 认领（零 spawn，结构性不触达 launchManaged）。用户停止守卫
+   * （F-1/M-8）：本窗口主动断开（stopRequested=true）且候选就是刚断开的那个
+   * pid 时跳过认领（不自动连回用户刚停止的实例，rlog 留痕）；记录换成其他
+   * pid（实例换了）或端口上出现新实例时正常认领。
+   */
+  private async discoveryTick(): Promise<void> {
+    if (this.state !== 'stopped' || this.discoveryInFlight) return
+    this.discoveryInFlight = true
+    try {
+      // 候选发现 a)：注册表活记录优先（与 start() step1 同型判定，401-aware——
+      // unauthorized 仍是「服务存活」的认证事实，记录可认领；down 才落空）。
+      const inst = readInstance()
+      const rec = inst.dsh
+      if (dshAlive(inst) && rec !== null) {
+        const registryProbeKind = (await this.probeState(rec.port)).kind
+        rlog(`discovery: registry candidate dsh=${JSON.stringify(rec)} probe=${registryProbeKind !== 'down'}${registryProbeKind === 'unauthorized' ? ' (401: alive, session required)' : ''}`)
+        if (registryProbeKind !== 'down') {
+          if (this.stopRequested && rec.pid !== null && rec.pid === this.dshPid) {
+            rlog('discovery: skip re-adopting the manually detached instance (same pid); reconnect manually')
+            return
+          }
+          await this.discoveryAdopt(rec.port, rec.pid, rec.managedBy, registryProbeKind, rec)
+          return
+        }
+      }
+      // 候选发现 b)：配置端口探测兜底（与 start() step2 同型判定——身份判定复用
+      // resolvePortPid + processCommandLine + looksLikeDsh；CIM 不可用时按页面
+      // 签名记录 holder pid，既有兜底同型）。
+      const probePort = this.options.port > 0 ? this.options.port : 0
+      if (probePort > 0) {
+        const probeKind = (await this.probeState(probePort)).kind
+        if (probeKind !== 'down') {
+          const holder = resolvePortPid(probePort)
+          rlog(`discovery: port candidate probe(port=${probePort})=${probeKind} holder=${JSON.stringify(holder)}`)
+          let pid: number | null = null
+          if (holder) {
+            const cmdline = processCommandLine(holder.pid, 15_000)
+            if (cmdline !== null) {
+              // ADR-22: keep the fragment (≤300 chars) for the external degraded card.
+              this.externalCommandLine = cmdline.slice(0, 300)
+              pid = looksLikeDsh(cmdline) ? holder.pid : null
+            } else {
+              // CIM unavailable: the page probe already verified the __DSH_BOOT__
+              // signature; record the holder PID (step2 同型兜底).
+              pid = holder.pid
+              rlog('discovery: CIM unavailable; recording holder pid on page-signature basis')
+            }
+          }
+          if (pid === null) {
+            rlog('discovery: port holder identity check failed; not adopting (next tick re-judges)')
+            return
+          }
+          if (this.stopRequested && pid === this.dshPid) {
+            rlog('discovery: skip re-adopting the manually detached instance (same pid); reconnect manually')
+            return
+          }
+          await this.discoveryAdopt(probePort, pid, 'external', probeKind, rec)
+          return
+        }
+      }
+      // c) 都未命中：保持停止态，等下一周期（静默，无日志噪声）。
+    } finally {
+      this.discoveryInFlight = false
+    }
+  }
+
+  /**
+   * discoveryTick 的认领落点（§4.2 第 3 条）：beginAttachment（per-attach 重置）
+   * → setState('starting')（可见过渡）→ adopt（会话建立/快照装配/ready 落点，
+   * 与 start() step1/step4 的认领完全同一条落点链）→ writeRegistry → startProbe
+   * （存活探活武装；setState('ready') 已由挂钩自动拆除发现探活器）。认领失败
+   * （会话不可用）由 adopt 内部 enterSessionUnavailable 落 error 态（error 落点
+   * attached 复位，DR-22-10 落点 #6；发现探活器已随离开 stopped 拆除、不再自动
+   * 重试——恢复由用户手动 ▶/⟳ 接管）。零 spawn 红线：本方法结构性不含
+   * launchManaged 调用（PU-22-4 静态断言）。
+   */
+  private async discoveryAdopt(port: number, pid: number | null, managedBy: ManagedBy, probeKind: ProbeKind, rec: DshRecord | null): Promise<void> {
+    this.beginAttachment()
+    this.setState('starting')
+    await this.adopt(port, pid, managedBy, probeKind, rec)
+    await this.writeRegistry()
+    this.startProbe()
+  }
+
   private async probeTick(): Promise<void> {
     if (this.state !== 'ready' || this.port === null) return
     const outcome = await this.probeState(this.port)
@@ -1218,6 +1401,10 @@ export class DshRuntime extends EventEmitter {
         this.errorMessage = SESSION_EXPIRED_MESSAGE
         this.stopProxy()
         this.stopProbe()
+        // 0.1.22 DR-22-10/V3-1（落点 #7）：进入 error 前 attached 复位（401 判死
+        // 落点；0.1.21 已验收的「401 → error 态面板 ⟳ 恢复」路径在拆分后依赖本
+        // 复位，否则 attachExisting 守卫谎报成功）。
+        this.attached = false
         this.setState('error')
         this.emit('error', this.errorMessage)
       }
@@ -1269,13 +1456,20 @@ export class DshRuntime extends EventEmitter {
         // 0.1.21 改动点 3（H-5）: 记录生命周期终点 → 附着记忆置 null。
         this.attachedLaunchMode = null
         this.attachedChannel = null
+        // 0.1.22 DR-22-10/V3-1（落点 #2）：进入 stopped 前 attached 复位（清理链
+        // 完整性修复，与 step4 失败先例同型；ADR-21 判定与行为零变化）。
+        this.attached = false
         this.setState('stopped')
         return
       }
       if (recLaunchMode === 'direct' || (rec === null && this.attachedLaunchMode === 'direct')) {
-        // ② 受管直启形态 → 既有 bounded relaunch 现状逐字保留（§二不做清单第 6
-        //    项，用户裁决 O-21-1 边界外；多窗口并发重拉竞态属既有行为，R-9）。
-        rlog(`probe: dsh dead after ${this.probeFailures} consecutive failures (pid dead=${pidDead}); clearing record + bounded relaunch`)
+        // ② 受管直启形态 → 0.1.22 取消自动重拉（2026-09-10 用户终审 O-22-a：
+        //    「崩溃不自动拉起，改为手动拉起；自动的只有重连」）。清记录（pid
+        //    守卫共用）+ 与分支③同构清理链（补 stopProbe() 与 attached 复位，
+        //    DR-22-10/V3-1）+ setState('stopped')，spawn 次数为 0；进入停止态后
+        //    由发现探活器接力（自动认领新实例）或用户手动 ▶ 启动 / ⟳ 重连恢复。
+        rlog('probe: direct-mode dsh died; not auto-relaunching (user policy 2026-09-10); reconnect manually')
+        this.refreshLaunchInfo({ kind: 'disconnect', rec: rec ?? null })
         if (clearDeadRecordGuarded()) {
           rlog('probe: direct-death branch cleared the dsh record')
         } else {
@@ -1285,12 +1479,14 @@ export class DshRuntime extends EventEmitter {
         this.port = null
         this.url = null
         this.stopProxy()
-        // 0.1.21 改动点 3（H-5）: 记录已清 → 附着记忆置 null（重拉成功后由
-        // launchManaged 落点重赋值）。
+        this.stopProbe()
+        // 0.1.21 改动点 3（H-5）: 记录生命周期终点 → 附着记忆置 null。
         this.attachedLaunchMode = null
         this.attachedChannel = null
-        this.setState('starting')
-        void this.launchManaged()
+        // 0.1.22 DR-22-10/V3-1（落点 #3）：进入 stopped 前 attached 复位（死亡后
+        // ▶ 启动 / ⟳ 重连恢复入口真实可达的前提，与 step4 失败先例同型）。
+        this.attached = false
+        this.setState('stopped')
         return
       }
       // ③ external 记录（无 launchMode）/ 记录已清且本窗口记忆非 direct →
@@ -1314,6 +1510,9 @@ export class DshRuntime extends EventEmitter {
       // 0.1.21 改动点 3（H-5）: 记录生命周期终点 → 附着记忆置 null。
       this.attachedLaunchMode = null
       this.attachedChannel = null
+      // 0.1.22 DR-22-10/V3-1（落点 #4）：进入 stopped 前 attached 复位（与
+      // step4 失败先例同型）。
+      this.attached = false
       this.setState('stopped')
       return
     }
@@ -1567,6 +1766,7 @@ export class DshRuntime extends EventEmitter {
 
   dispose(): void {
     this.stopProbe()
+    this.stopDiscoveryProbe()
     this.stopProxy()
     this.removeAllListeners()
   }

@@ -98,7 +98,8 @@ export function buildPanelHtml(url: string | null, cspSource = '', state: Runtim
     <span id="state">${stateText}</span>
     <button id="btn-details" title="DSH 配置"${btnAttr(dis.details)}>ⓘ</button>
     <button id="btn-open" title="Open in browser"${btnAttr(dis.openBrowser)}>↗</button>
-    <button id="btn-restart" title="Restart runtime"${btnAttr(dis.restart)}>⟳</button>
+    <button id="btn-reconnect" title="重连（只认领运行实例，不拉起）"${btnAttr(dis.reconnect)}>⟳</button>
+    <button id="btn-start" title="启动 dsh（有实例先认领，无实例拉起）"${btnAttr(dis.start)}>▶</button>
     <button id="btn-stop" title="Stop runtime"${btnAttr(dis.stop)}>■</button>
   </div>
   <div id="stage">
@@ -117,7 +118,8 @@ export function buildPanelHtml(url: string | null, cspSource = '', state: Runtim
   var pickEl = document.getElementById('channel-pick');
   var btnD = document.getElementById('btn-details');
   var btnO = document.getElementById('btn-open');
-  var btnR = document.getElementById('btn-restart');
+  var btnR = document.getElementById('btn-reconnect');
+  var btnStart = document.getElementById('btn-start');
   var btnS = document.getElementById('btn-stop');
   // Boot observation (v4, item 3): prove the page script actually executed.
   // RV-16-11 取证口径：title「·booted」区分两候选死因（a: title 正常 + 握手缺失
@@ -164,7 +166,8 @@ export function buildPanelHtml(url: string | null, cspSource = '', state: Runtim
     if (!m) return;
     if (btnD) btnD.disabled = !!m.details;
     if (btnO) btnO.disabled = !!m.openBrowser;
-    if (btnR) btnR.disabled = !!m.restart;
+    if (btnR) btnR.disabled = !!m.reconnect;
+    if (btnStart) btnStart.disabled = !!m.start;
     if (btnS) btnS.disabled = !!m.stop;
   }
   function applyState(msg) {
@@ -183,6 +186,11 @@ export function buildPanelHtml(url: string | null, cspSource = '', state: Runtim
     else if (st === 'error') {
       overlayEl.textContent = '启动失败：' + (msg.error || 'unknown') + '\\n\\n（可用工具栏 ⟳ 重试）';
       overlayEl.classList.remove('hide');
+    } else if (st === 'stopped') {
+      // 0.1.22 §4.6 第 1 条：停止态文案——一句话覆盖「手动启动/等待外部 dsh」两个
+      // 行动指引（DR-22-5：不引入子态状态机；发现探活兜底说明自动连接）。
+      overlayEl.textContent = 'dsh 已停止\\n点 ▶ 启动新实例，或 ⟳ 重连运行中的实例；检测到运行中的 dsh 会自动连接';
+      overlayEl.classList.remove('hide');
     } else if (st !== 'ready' && st !== 'awaitingChannel') {
       overlayEl.textContent = st === 'starting' ? '正在启动 dsh…' : st;
       overlayEl.classList.remove('hide');
@@ -191,7 +199,10 @@ export function buildPanelHtml(url: string | null, cspSource = '', state: Runtim
   // ---- bind-first：全部绑定先于 typeof acquireVsCodeApi 检查（#90②）----
   if (btnD) btnD.addEventListener('click', function () { post({ type: 'showDetails' }); });
   if (btnO) btnO.addEventListener('click', function () { post({ type: 'openBrowser' }); });
-  if (btnR) btnR.addEventListener('click', function () { post({ type: 'restart' }); });
+  // 0.1.22 O-22-e 拆分：⟳ = 重连（只认领不拉起，dsh.reconnect）；▶ = 启动
+  // （start() 四步仲裁，dsh.start）；ready 态 ⟳/▶ 按禁用矩阵置灰（DR-22-9）。
+  if (btnR) btnR.addEventListener('click', function () { post({ type: 'reconnect' }); });
+  if (btnStart) btnStart.addEventListener('click', function () { post({ type: 'start' }); });
   if (btnS) btnS.addEventListener('click', function () { post({ type: 'stop' }); });
   if (pickEl) pickEl.addEventListener('click', function (e) {
     var t = e.target;
@@ -304,21 +315,27 @@ export function buildDetailsHtml(
   <div class="muted">正在启动 dsh…启动完成后此处显示版本与 bin 目录信息。</div>`
   } else if (phase === 'error') {
     const errText = opts?.errorMessage ?? null
+    // 0.1.22 O-22-e 拆分（V3-3）：error 相位行动 = 启动 dsh（重试）为主 +
+    // 重连为辅（双按钮）；data-action="start"/"reconnect"，不含 restart。
     body = `
   <div class="head">dsh 启动失败</div>
   ${kvRow('插件版本', extVersionText(opts?.extVersion))}
   <div class="mono err">${escapeAttr(errText !== null && errText.length > 0 ? errText : '未知错误')}</div>
-  <div class="actions"><button data-action="restart">重试（重启 dsh）</button></div>`
+  <div class="muted">启动 = 重新启动 dsh（有运行实例则认领，无实例拉起新实例）；重连 = 只认领运行中的实例。</div>
+  <div class="actions"><button data-action="start">启动 dsh（重试）</button><button data-action="reconnect">重连</button></div>`
   } else if (phase === 'stopped') {
     const userStop = info !== null && info.launchMode === 'start'
     const head = userStop
       ? '已按您的操作停止（常驻控制台窗已关闭即停止 dsh）'
       : '已断开（dsh 进程未停止或异常退出）'
+    // 0.1.22 O-22-e 拆分 + §4.6 第 2 条：既有二分文案保留；行动指引行改写为
+    // 重连/启动语义拆分说明 + 自动连接说明行；按钮组改「重连」「启动」双按钮。
     body = `
   <div class="head">${head}</div>
   ${kvRow('插件版本', extVersionText(opts?.extVersion))}
-  <div class="muted">如需重新连接，请点「重连」；主面板工具栏 ⟳ 亦可。</div>${info !== null ? stoppedRows(info) : ''}
-  <div class="actions"><button data-action="restart">重连</button></div>`
+  <div class="muted">重连 = 只认领运行中的实例（不拉起新进程）；启动 = 无运行实例时拉起新实例（有实例则认领）。</div>
+  <div class="muted">检测到运行中的 dsh 实例时会自动连接。</div>${info !== null ? stoppedRows(info) : ''}
+  <div class="actions"><button data-action="reconnect">重连</button><button data-action="start">启动</button></div>`
   } else {
     body = info === null ? readyBody(null) : readyBody(info, opts)
   }
@@ -404,7 +421,12 @@ export function buildDetailsHtml(
     else if (a === 'open-dir') post({ type: 'openPath', path: el.getAttribute('data-path') || '', kind: 'dir' });
     else if (a === 'open-file') post({ type: 'openPath', path: el.getAttribute('data-path') || '', kind: 'file' });
     else if (a === 'update') post({ type: 'updateRuntime' });
+    // ready 相位「重启 dsh」沿用 restart（dsh.restart 组合语义，DR-22-9）。
     else if (a === 'restart') post({ type: 'restart' });
+    // 0.1.22 O-22-e 拆分：error/stopped 相位双按钮（启动 = dsh.start 四步仲裁；
+    // 重连 = dsh.reconnect 只认领不拉起）。
+    else if (a === 'reconnect') post({ type: 'reconnect' });
+    else if (a === 'start') post({ type: 'start' });
     else if (a === 'open-panel') post({ type: 'openPanel' });
     else if (a === 'set-channel') post({ type: 'setChannel', channel: el.getAttribute('data-channel') || '' });
     else if (a === 'apply-channel-restart') post({ type: 'applyChannelRestart' });
