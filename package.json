@@ -2,7 +2,7 @@
   "name": "dsh-vscode-agent",
   "displayName": "DSH Panel",
   "description": "DeepSeek Harness 右侧边栏面板：启动/复用 dsh web 并内嵌其 Web UI",
-  "version": "0.1.18",
+  "version": "0.1.20",
   "publisher": "dsh-vscode-agent",
   "private": true,
   "license": "MIT",
