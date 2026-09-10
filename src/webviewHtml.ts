@@ -407,6 +407,7 @@ export function buildDetailsHtml(
     else if (a === 'restart') post({ type: 'restart' });
     else if (a === 'open-panel') post({ type: 'openPanel' });
     else if (a === 'set-channel') post({ type: 'setChannel', channel: el.getAttribute('data-channel') || '' });
+    else if (a === 'apply-channel-restart') post({ type: 'applyChannelRestart' });
   });
 })();
 </script>
@@ -540,13 +541,21 @@ function stoppedRows(info: DshLaunchInfo): string {
  * Current channel highlighted (its own button disabled — no redundant write);
  * the three buttons carry `data-action="set-channel"` (setChannel uplink).
  * When the config channel differs from the RUNNING snapshot channel, the
- * highlighted 「立即重启以生效」 button renders (reuses the existing restart
- * action; never auto-restarts; channelSelected=true is written by the host,
- * so the first-launch pick card never fires again).
+ * highlighted 「立即重启以生效」 button renders — 0.1.21（改动点 4）起改发
+ * `applyChannelRestart` 上行消息（语义分离于 restart 的重连语义：受管受控杀后
+ * 以新通道重拉 / 外部不代杀只给指引；never auto-restarts; channelSelected=true
+ * is written by the host, so the first-launch pick card never fires again).
+ *
+ * 0.1.21（改动点 5，CR-8）: `current` = 快照 channel 真值（string | null）。
+ * null = external 接管 / 旧记录缺省 / 注册表真值不可知 → 「当前」行如实显示
+ * 「未知」（绝不回显配置值）；待生效判定（cfg !== current）在 current=null 时
+ * 恒真——「已选 X，待重启生效」提示与「立即重启以生效」按钮保持渲染，外部
+ * 进程仍跑旧通道的事实如实呈现；三个通道按钮均无 disabled 项（无当前项可比）。
  */
-function channelSwitcherHtml(current: string, opts?: DetailsRenderOptions): string {
+function channelSwitcherHtml(current: string | null, opts?: DetailsRenderOptions): string {
   const cfg = typeof opts?.configChannel === 'string' && opts.configChannel.length > 0 ? opts.configChannel : null
   const pending = cfg !== null && cfg !== current
+  const currentText = current ?? '未知'
   const buttons = channelPickItems()
     .map(
       (it) =>
@@ -556,11 +565,11 @@ function channelSwitcherHtml(current: string, opts?: DetailsRenderOptions): stri
   const pendingNote = pending ? ` <span class="muted">（已选「${escapeAttr(cfg!)}」，待重启生效）</span>` : ''
   const pendingAction = pending
     ? `
-  <div class="actions"><button class="primary" data-action="restart">立即重启以生效</button></div>`
+  <div class="actions"><button class="primary" data-action="apply-channel-restart">立即重启以生效</button></div>`
     : ''
   return `
   <div class="sect">通道</div>
-  <div class="row"><span class="k">当前</span><span class="v"><b>${escapeAttr(current)}</b>${pendingNote}</span></div>
+  <div class="row"><span class="k">当前</span><span class="v"><b>${escapeAttr(currentText)}</b>${pendingNote}</span></div>
   <div class="actions">
     ${buttons}
   </div>${pendingAction}`

@@ -22,7 +22,8 @@
     "onCommand:dsh.stop",
     "onCommand:dsh.openInBrowser",
     "onCommand:dsh.updateRuntime",
-    "onCommand:dsh.chooseChannel"
+    "onCommand:dsh.chooseChannel",
+    "onCommand:dsh.applyChannel"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -84,6 +85,10 @@
       {
         "command": "dsh.chooseChannel",
         "title": "DSH: 选择 dsh 通道"
+      },
+      {
+        "command": "dsh.applyChannel",
+        "title": "DSH: 应用通道并重启 dsh"
       }
     ],
     "configuration": {

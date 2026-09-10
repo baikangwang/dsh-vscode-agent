@@ -76,6 +76,7 @@ code --install-extension dsh-vscode-agent-0.1.20.vsix
 - `DSH: Open Panel` / `DSH: Show Details`（dsh 版本/bin 目录/启动方式详情视图）/ `DSH: Restart Runtime`（reconnect，不关停 dsh）/ `DSH: Stop Runtime`（disconnect，不关停 dsh）
 - `DSH: Open in Browser` / `DSH: Update Runtime`（受控重拉 managed dsh；外部 dsh 提示手动 `npx @deepseek-ai/dsh@latest web`）
 - `DSH: 选择 dsh 通道`（重选 `latest`/`next`/`alpha`；经重启 dsh 生效，不自动重启）
+- `DSH: 应用通道并重启 dsh`（以当前配置通道重启受管 dsh——受控杀后按新通道重拉；外部 dsh 不代杀，提示手动停止后面板重连接管）
 
 ## 数据与日志
 

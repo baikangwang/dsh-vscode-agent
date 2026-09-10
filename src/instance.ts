@@ -46,6 +46,16 @@ export interface DshRecord {
    * the field is omitted, the flow never breaks.
    */
   processStartedAt?: string
+  /**
+   * 0.1.21（设计 §3.4 D-2 改动点 5 / §7.1）：运行中 dsh 实际启动所用的通道。
+   * OPTIONAL for backward compatibility（launchMode / processStartedAt 先例，
+   * 同型）：0.1.21 之前写入的记录缺省本字段 → 读侧按未知（null）处理——快照
+   * 渲染「未知」、待生效判定恒真（插件无法确知未标注进程的真实通道，诚实
+   * 缺省）。写入方 runtime.writeRegistry 只认启动侧记忆：managed 拉起写入
+   * 实际启动通道；同 pid 重新认领保留原值（keepDshStartedAt 同型守卫）；
+   * external 认领不写（插件无法核实外部进程真实通道，诚实缺省）。
+   */
+  channel?: string
 }
 
 export interface WindowRecord {

@@ -36,6 +36,7 @@ type DetailsMessage =
   | { type: 'restart' }
   | { type: 'openPanel' }
   | { type: 'setChannel'; channel?: string } // 0.1.15 #84: the ready-card switcher uplink
+  | { type: 'applyChannelRestart' } // 0.1.21 改动点 4: 「立即重启以生效」上行（受管受控杀重拉 / 外部不代杀指引）
 
 export class DshDetailsProvider implements vscode.WebviewViewProvider {
   static readonly viewId = VIEW_ID
@@ -156,6 +157,12 @@ export class DshDetailsProvider implements vscode.WebviewViewProvider {
       case 'restart':
         void vscode.commands.executeCommand('dsh.restart')
         break
+      case 'applyChannelRestart':
+        // 0.1.21 改动点 4: 「立即重启以生效」→ dsh.applyChannel（语义分离于
+        // dsh.restart 的重连语义；受管形态受控杀后以新通道重拉，外部形态不代
+        // 杀、给手动路径指引——判定与提示在 runtime / extension 层）。
+        void vscode.commands.executeCommand('dsh.applyChannel')
+        break
       case 'setChannel': {
         // 0.1.15 #84: the ready-card switcher — write order FIXED (PP-10-5):
         // normalize → writeChannel → writeChannelSelected=true → runtime
@@ -168,7 +175,12 @@ export class DshDetailsProvider implements vscode.WebviewViewProvider {
         }
         const config = vscode.workspace.getConfiguration('dsh')
         try {
-          await config.update('channel', norm.channel, vscode.ConfigurationTarget.Global)
+          // 0.1.21 改动点 6（v4 QA G-6）: 写设置侧幂等——同值不重复写设置
+          // （与 onDidChangeConfiguration 的 echo 防护配套，避免监听器自激）；
+          // channelSelected=true 仍照常写（首启标志语义独立）。
+          if (config.get<string>('channel', 'latest') !== norm.channel) {
+            await config.update('channel', norm.channel, vscode.ConfigurationTarget.Global)
+          }
           await config.update('channelSelected', true, vscode.ConfigurationTarget.Global)
         } catch (err) {
           appendDecisionLog(`[details] setChannel config write failed (${(err as Error).message}); keeping the current channel (honest degradation)`)

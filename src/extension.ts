@@ -24,7 +24,7 @@ import { DshPanel } from './webview'
 import { DshDetailsProvider } from './webviewDetails'
 import { EXTERNAL_VERSION_MISMATCH_WARNING, EXTERNAL_VERSION_NOTE_CMDLINE, statusLine } from './launchInfo'
 import { appendDecisionLog, ensureDataDir, logFile, redactSecrets } from './paths'
-import { CHANNEL_PICK_PLACEHOLDER, runFirstLaunchChannelSelect, type ChannelSelectDeps } from './channelSelect'
+import { CHANNEL_PICK_PLACEHOLDER, normalizeChannel, runFirstLaunchChannelSelect, type ChannelSelectDeps } from './channelSelect'
 
 let runtime: DshRuntime | null = null
 let statusItem: vscode.StatusBarItem | null = null
@@ -91,7 +91,13 @@ function buildChannelSelectDeps(): ChannelSelectDeps {
       return picked?.label
     },
     readChannel: () => config().get<string>('channel', 'latest'),
-    writeChannel: (v) => config().update('channel', v, vscode.ConfigurationTarget.Global),
+    writeChannel: (v) => {
+      // 0.1.21 改动点 6（v4 QA G-6）: 写设置侧幂等——同值不重复写设置（与
+      // onDidChangeConfiguration 的 echo 防护配套，避免监听器自激；选择结果
+      // 语义不变——同值写入本就是 no-op）。
+      if (config().get<string>('channel', 'latest') === v) return Promise.resolve()
+      return config().update('channel', v, vscode.ConfigurationTarget.Global)
+    },
     readChannelSelected: () => config().get<boolean>('channelSelected', false),
     writeChannelSelected: (v) => config().update('channelSelected', v, vscode.ConfigurationTarget.Global),
     log: (msg) => appendDecisionLog(`[channelSelect] ${msg}`),
@@ -306,7 +312,53 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         '外部/已接管 dsh 无法自动升级。请手动运行 `npx @deepseek-ai/dsh@latest web` 或受控重拉。' + sep,
       )
     }),
+    vscode.commands.registerCommand('dsh.applyChannel', async () => {
+      // 0.1.21 D-2 改动点 3: 「应用通道并重启」专用命令——语义分离于
+      // dsh.restart 的重连语义（DR-2/DR-3）：受管形态受控杀后以新通道重拉；
+      // 外部形态不代杀（P0-D/ADR-2 红线），给手动路径指引。判定在 runtime
+      // （applyChannelRestart 三分流），本层只做按返回动作的用户提示面。
+      const rt = runtime
+      if (!rt) {
+        void vscode.window.showWarningMessage('DSH 尚未就绪')
+        return
+      }
+      const action = await rt.applyChannelRestart()
+      if (action === 'relaunched') {
+        void vscode.window.showInformationMessage('正在以新通道重启 dsh……')
+        await openPanel()
+      } else if (action === 'external-hint') {
+        void vscode.window.showWarningMessage('外部 dsh 请手动停止后由面板重连接管，届时以新通道拉起。')
+      }
+      // 'noop'：通道一致（按钮本就不该渲染，双保险）——静默处理，runtime 层
+      // rlog 已含 configChannel / runningChannel 两值留痕（v5 QA H-4 追查锚点）。
+    }),
   )
+
+  // 0.1.21 改动点 6（出处 C R3；设计 §3.4 D-2 改动点 6）: 设置面接线——设置
+  // 编辑器直改 `dsh.channel` 也能到达 runtime（此前 options.channel 停在构造
+  // 快照，设置直改永远落不进启动链）。echo 防护：面板/命令路径写设置会再次
+  // 触发本事件，此时「新值 == 当前值」直接跳过（同值不调 setChannel，R-5）；
+  // 各写设置调用方（writeChannel / webviewDetails setChannel）已做同值不重复
+  // 写设置（写设置侧幂等）。runtime.setChannel 只更新内存 options.channel、
+  // 不写设置（既有契约，保持不动）——本处理器绝不回写设置，监听器不会自激。
+  // 无头 sim 的 fake vscode.workspace 仅提供 getConfiguration 最小面（设计
+  // §7.3：vscode 事件层 sim 无法无头覆盖、归 GUI 验收），故注册处对 API 存在
+  // 性做存在性判断（`runtime?.dispose?.()` 既有防御先例同型；真实 VSCode 宿主
+  // 恒存在，生产行为不受影响）。
+  if (typeof vscode.workspace.onDidChangeConfiguration === 'function') {
+    const cfgWatcher = vscode.workspace.onDidChangeConfiguration((event) => {
+      const rt = runtime
+      if (!rt || !event.affectsConfiguration('dsh.channel')) return
+      const raw = vscode.workspace.getConfiguration('dsh').get<string>('channel', 'latest')
+      const norm = normalizeChannel(raw)
+      if (norm.normalized) {
+        appendDecisionLog(`[extension] onDidChangeConfiguration: channel '${raw}' is not a published dist-tag; normalizing to '${norm.channel}' (ADR-29)`)
+      }
+      if (norm.channel === rt.options.channel) return // echo 防护（R-5）
+      rt.setChannel(norm.channel)
+    })
+    if (cfgWatcher) context.subscriptions.push(cfgWatcher)
+  }
 
   // Lifecycle bookkeeping on extension-host exit (reliable; deactivate is not).
   process.on('exit', () => {

@@ -32,10 +32,11 @@ import {
   unregisterWindow, writeInstance,
   type DshRecord, type IdentityVerdict,
 } from './instance'
-import { DshProcess, START_LAUNCHER_LABEL, judgeContractByVersion, probeDetail, resolveBannerFromLog, treeKill, type ContractTier, type ProbeKind, type SpawnedInfo } from './dshProcess'
+import { DshProcess, START_LAUNCHER_LABEL, judgeContractByVersion, probeDetail, resolveBannerFromLog, treeKill, type ContractTier, type ProbeKind, type SpawnOptions, type SpawnedInfo } from './dshProcess'
 import { readRuntimeMeta, resolveDshBin, scanNpxCacheReadonly } from './dshResolver'
 import { buildExternalVersionNote, buildLaunchInfo, extractVersionFromCommandLine, parseSelfVersion, type DshLaunchInfo } from './launchInfo'
 import { appendDecisionLog, LOOPBACK_HOST } from './paths'
+import { resolveChannelRestartAction } from './channelSelect'
 import { mintSessionCookie, readCredentialsSecret, startAuthProxy, type AuthProxyHandle } from './authProxy'
 
 export type ManagedBy = 'extension' | 'external' | 'managed-own'
@@ -182,6 +183,16 @@ export interface RuntimeOptions {
    * StartTime, G3 shape); headless tests inject a mock (PP-12-4).
    */
   processStartQuery?: (pid: number) => string | null
+  /**
+   * 0.1.21（实施清单第 8 项，v5 QA H-3 自测试任务拆出）：可注入的 DshProcess
+   * 进程工厂（identityCheck / resolvePortPidFn / processStartQuery 同型注入
+   * seam 先例）。提供时 launchManaged 经本工厂构造进程实例（代替
+   * `new DshProcess(...)`），无头测试可包装/计数 start() 调用以断言 spawn 次数
+   * （PU-21-1 多窗口同时手动重连收敛 = 恰 1 次拉起；PU-21-5 external 死亡 =
+   * 0 次拉起）。纯 Node 层生产面（不 import vscode）；缺省 = 既有
+   * `new DshProcess(...)` 行为逐字节不变。
+   */
+  dshProcessFactory?: (opts: SpawnOptions) => Pick<DshProcess, 'start'>
 }
 
 export class DshRuntime extends EventEmitter {
@@ -210,6 +221,37 @@ export class DshRuntime extends EventEmitter {
   private startLaunchFailures = 0
   /** ADR-21: launch mode of the most recent managed attempt (null = none yet). */
   private lastLaunchMode: 'start' | 'direct' | null = null
+  /**
+   * 0.1.21 改动点 3（设计 §3.4 D-1 / §7.1；出处 B）：本窗口当前附着实例的
+   * launchMode 记忆。作用面（如实说明，三项）：
+   *  1. probeTick 死亡分支三分流的形态判定兜底——注册表记录可能已被其他窗口
+   *     先一步清掉（rec === null），此时只能凭本窗口记忆判定形态；
+   *  2. start 模式跨窗口防复活：窗口 A 判定用户停止并清掉记录后，窗口 B 凭
+   *     自己的 'start' 记忆同样不复活用户刚关掉的实例（ADR-21 旧裁定
+   *     L1124-1148 的判定依据从「仅共享注册表」扩为「共享注册表 ∨ 本窗口
+   *     附着记忆」，单窗口语义零回退）；
+   *  3. 记录缺失时防误拉：曾认领 external 实例（记忆 null）的窗口在记录被清
+   *     后落入死亡分支③不拉起（现状该场景落 bounded relaunch，是 D-1 根因
+   *     的伴生重拉路径之一）。
+   * 赋值：launchManaged 成功 = 本次实际 mode（与 lastLaunchMode 同点）；adopt
+   * 认领 = rec.launchMode ?? null（记录缺失显式置 null，不是保持原值——v5 QA
+   * H-5 消歧）。清理：disconnect / shutdown 记账 / 死亡分支清记录 /
+   * forceRelaunchManaged 清记录时置 null（记录生命周期终点）+ start() 的
+   * per-attach 重置（沿用既有 per-attach 纪律，防前一次附着的记忆泄漏）。
+   */
+  private attachedLaunchMode: 'start' | 'direct' | null = null
+  /**
+   * 0.1.21 改动点 5（设计 §3.4 D-2 改动点 5 / §7.1；出处 B + 出处 C §4.4，CR-8）：
+   * 本窗口当前附着实例的真实启动通道记忆 —— 快照 channel 的唯一真值来源
+   * （快照从此只陈述运行实例的事实，不再配置直通回显）。赋值：launchManaged
+   * 成功 = this.options.channel（拉起时配置值即实际启动通道）；adopt 认领 =
+   * rec.channel ?? null——**不回退配置值**（回退会在「用户改配置后重连 adopt
+   * 活着的旧通道实例」场景把快照刷新为新值、待生效提示被抹掉，而外部进程仍跑
+   * 旧通道，正是 §3.2 第三层失效形态）。null = external 接管 / 旧记录缺省 /
+   * 尚未附着（诚实缺省：详情卡渲染「未知」、待生效判定恒真）。清理点与
+   * attachedLaunchMode 同点（记录生命周期终点 + per-attach 重置）。
+   */
+  private attachedChannel: string | null = null
   /** ADR-22: resolver hit transparency from the most recent managed launch. */
   private lastResolved: SpawnedInfo['resolved'] = null
   /** ADR-22: managed log of the most recent managed launch (self-version source). */
@@ -308,7 +350,13 @@ export class DshRuntime extends EventEmitter {
         port: this.port,
         pid: this.dshPid,
         managedBy: this.managedBy,
-        channel: this.options.channel,
+        // 0.1.21 改动点 5（CR-8）: 快照 channel 的真值来源 = attachedChannel
+        // （运行实例的真实启动通道），不再配置直通回显。null = external 接管 /
+        // 旧记录缺省 / 尚未附着 → 详情卡渲染「未知」、待生效判定恒真（诚实
+        // 呈现外部进程仍跑旧通道的事实，绝不回退配置值——见字段注释）。
+        // readRuntimeMeta 仍按配置通道取通道级 meta（lastCheckAt 是配置侧事实，
+        // 两种语义分离）。
+        channel: this.attachedChannel,
         externalCommandLine: this.externalCommandLine,
         // 0.1.14 第 16 个可选字段：token 契约档（T 路径）的带 token 直达 URL；
         // legacy/降级快照恒 null（null = 旧契约，不会破坏既有 15 字段消费者）。
@@ -385,6 +433,11 @@ export class DshRuntime extends EventEmitter {
     // never leak into this one's snapshots (same per-attach rule as
     // externalCommandLine — memory-only, registry-unpersisted).
     this.externalVersionFacts = null
+    // 0.1.21 改动点 3/5: the previous attachment's launch-mode / channel
+    // memories must never leak either (same per-attach rule) — the adopt /
+    // managed landing re-assigns both before any ready emit.
+    this.attachedLaunchMode = null
+    this.attachedChannel = null
     // 0.1.14 ADR-30 per-attach reset: the previous attachment's proxy/session
     // facts must never leak (a fresh managed launch re-judges the contract).
     this.contract = 'unknown'
@@ -411,7 +464,9 @@ export class DshRuntime extends EventEmitter {
       // Re-adopt the still-resident detached dsh (F1 / P0-H): no spawn.
       // 0.1.15 #81: the step1 probe result rides along — the session settles
       // inside adopt() (C path front-load / legacy direct) BEFORE ready.
-      await this.adopt(inst.dsh.port, inst.dsh.pid, inst.dsh.managedBy, registryProbeKind)
+      // 0.1.21: the record rides along too (attachedLaunchMode/attachedChannel
+      // memory source, 改动点 3/5).
+      await this.adopt(inst.dsh.port, inst.dsh.pid, inst.dsh.managedBy, registryProbeKind, inst.dsh)
       await this.writeRegistry()
       this.startProbe()
       return
@@ -456,7 +511,10 @@ export class DshRuntime extends EventEmitter {
                 `(registered pid ${rec.pid ?? 'null'} dead, live dsh holder ${holder.pid} on registered port ${probePort}, dsh signature matched)`,
             )
             // 0.1.15 #81: probeKind rides along (QA r1 MINOR-1 — all 4 call sites).
-            await this.adopt(probePort, holder.pid, 'managed-own', probeKind?.kind ?? null)
+            // 0.1.21: the (stale) record rides along too — its pid differs from
+            // the adopted holder pid, so the memory source rejects its fields
+            // (honest null; 改动点 3/5).
+            await this.adopt(probePort, holder.pid, 'managed-own', probeKind?.kind ?? null, rec)
             await this.writeRegistry()
             this.startProbe()
             return
@@ -471,7 +529,10 @@ export class DshRuntime extends EventEmitter {
         }
       }
       // 0.1.15 #81: probeKind rides along — the session settles inside adopt().
-      await this.adopt(probePort, pid, 'external', probeKind?.kind ?? null)
+      // 0.1.21: the record rides along too (same-pid re-adoption of a previous
+      // external record trusts nothing extra — its fields are absent by
+      // contract; 改动点 3/5).
+      await this.adopt(probePort, pid, 'external', probeKind?.kind ?? null, inst.dsh)
       await this.writeRegistry()
       this.startProbe()
       return
@@ -519,15 +580,28 @@ export class DshRuntime extends EventEmitter {
         `launchManaged: launch mode = ${mode}` +
           (mode === 'start' ? ` (launcher=${START_LAUNCHER_LABEL}, self-held resident console)` : ' (direct node, pre-0.1.9 shape)'),
       )
-      const proc = new DshProcess({
-        port: usePort,
-        channel: this.options.channel,
-        command: this.options.command,
-        dshHome: this.options.dshHome,
-        consoleVisible: this.options.consoleVisible,
-        launchMode: mode,
-        resolvePortPidFn: this.options.resolvePortPidFn,
-      })
+      // 0.1.21（实施清单第 8 项）: the DshProcess instance comes from the
+      // injectable factory when one is provided (spawn-count seam for the
+      // PU-21-1/5 headless tests); absent = the byte-identical default path.
+      const proc = this.options.dshProcessFactory
+        ? this.options.dshProcessFactory({
+            port: usePort,
+            channel: this.options.channel,
+            command: this.options.command,
+            dshHome: this.options.dshHome,
+            consoleVisible: this.options.consoleVisible,
+            launchMode: mode,
+            resolvePortPidFn: this.options.resolvePortPidFn,
+          })
+        : new DshProcess({
+            port: usePort,
+            channel: this.options.channel,
+            command: this.options.command,
+            dshHome: this.options.dshHome,
+            consoleVisible: this.options.consoleVisible,
+            launchMode: mode,
+            resolvePortPidFn: this.options.resolvePortPidFn,
+          })
       try {
         const info = await proc.start()
         // ADR-21: the connected pid IS the service pid (direct: the spawned
@@ -535,6 +609,13 @@ export class DshRuntime extends EventEmitter {
         // ADR-14, preserved). The wrapper pid stays in the log only.
         this.dshPid = info.servicePid
         this.lastLaunchMode = mode
+        // 0.1.21 改动点 3/5: the landing assignment of BOTH attachment memories
+        // — attachedLaunchMode = the ACTUAL attempt mode (death-branch form
+        // discriminator), attachedChannel = the channel this instance was
+        // actually launched with (= this.options.channel at launch time; the
+        // snapshot / registry channel truth source).
+        this.attachedLaunchMode = mode
+        this.attachedChannel = this.options.channel
         this.lastResolved = info.resolved
         this.lastLaunchLogFile = info.logFile
         this.port = info.port
@@ -798,11 +879,24 @@ export class DshRuntime extends EventEmitter {
    *    rlog, contract stays 'unknown'.
    * The former bare-URL eager assignment + eager `setState('ready')` (0.1.14
    * L691/L699) are GONE — starting holds until the session settles (#80①).
+   *
+   * 0.1.21 改动点 3/5：`rec`（认领落点的注册表记录，可缺省）是
+   * attachedLaunchMode / attachedChannel 两条附着记忆的赋值源——
+   *  - attachedLaunchMode = rec.launchMode ?? null（记录缺失 / external 记录
+   *    显式置 null，不是保持原值——v5 QA H-5）；
+   *  - attachedChannel = rec.channel ?? null（不回退配置值，CR-8）。
+   *    记录的 pid 与被认领 pid 不一致（stale 记录描述的不是本进程）时不采信
+   *    记录字段，同归 null（快照只陈述运行实例的事实）。
    */
-  private async adopt(port: number, pid: number | null, managedBy: ManagedBy, probeKind: ProbeKind | null): Promise<void> {
+  private async adopt(port: number, pid: number | null, managedBy: ManagedBy, probeKind: ProbeKind | null, rec?: DshRecord | null): Promise<void> {
     this.port = port
     this.managedBy = managedBy
     this.dshPid = pid
+    // 0.1.21 改动点 3/5: 认领落点赋值两条附着记忆（见上方方法注释；记录缺失
+    // / pid 不一致 → 双双显式置 null，per-attach 记忆绝不泄漏）。
+    const adoptedRec = rec !== undefined && rec !== null && pid !== null && rec.pid === pid ? rec : null
+    this.attachedLaunchMode = adoptedRec?.launchMode ?? null
+    this.attachedChannel = adoptedRec?.channel ?? null
     // 0.1.18 ADR-48 (§3.3): external 接管路径在快照装配前完成只读版本扫描 +
     // 命令行版本提取。step1 re-adopt 场景 externalCommandLine 为 null（start()
     // 开头 per-attach 重置且注册表不落盘）→ 命令行版本恒 null，目录版本仍可得
@@ -975,6 +1069,16 @@ export class DshRuntime extends EventEmitter {
       // on re-adopt; absent (JSON-dropped undefined) for external/old records
       // (= direct semantics, backward compatible).
       launchMode: keepDshStartedAt && prev !== null ? prev.launchMode : (this.lastLaunchMode ?? undefined),
+      // 0.1.21 改动点 5（设计 §3.4 D-2 改动点 5 / §7.1）: 可选 channel 字段，
+      // launchMode / processStartedAt 同型的 keep-reuse 先例——
+      //  - managed 拉起（新 pid）：写 attachedChannel = 拉起时配置值（实际启动
+      //    通道，启动侧记忆为唯一写入源）；
+      //  - 同 pid 重新认领（keepDshStartedAt）：保留记录原值（注册表真值不因
+      //    认领窗口而漂移）；
+      //  - external 认领（attachedChannel 为 null）→ undefined 被 JSON 丢弃
+      //    （插件无法核实外部进程真实通道，诚实缺省）；
+      //  - 旧记录缺省（读侧）：null → 快照「未知」+ 待生效恒真（写侧零回归）。
+      channel: keepDshStartedAt && prev !== null ? prev.channel : (this.attachedChannel ?? undefined),
       // 0.1.16 #97 (ADR-40): see the block above — keep-reuse / fresh
       // query-once / failure omits the field (undefined is JSON-dropped).
       processStartedAt,
@@ -1020,7 +1124,9 @@ export class DshRuntime extends EventEmitter {
       const state = port > 0 ? await this.probeState(port) : null
       if (inst.dsh && state !== null && state.kind !== 'down') {
         // 0.1.15 #81: the step4 probe result rides along (waiting scenario).
-        await this.adopt(port, inst.dsh.pid, inst.dsh.managedBy, state.kind)
+        // 0.1.21: the record rides along too (winner-written launch facts;
+        // 改动点 3/5).
+        await this.adopt(port, inst.dsh.pid, inst.dsh.managedBy, state.kind, inst.dsh)
         await this.writeRegistry()
         this.startProbe()
         return true
@@ -1121,44 +1227,95 @@ export class DshRuntime extends EventEmitter {
     const rec = readInstance().dsh
     const pidDead = rec === null || rec.pid === null || !isAlive(rec.pid)
     if (this.probeFailures >= LIVENESS_FAIL_THRESHOLD && pidDead && this.state === 'ready') {
-      // ADR-21 core ruling (§4.6.5): a start-launched dsh CANNOT be
-      // probed apart from its console window — a crash and a user window
-      // close look identical. Relaunching on death would create an infinite
-      // zombie loop (window closes -> relaunch succeeds -> window pops
-      // again). So: treat it as USER STOP — clear the record, surface
-      // 'stopped' (degraded snapshot keeps launchMode='start' → the UI's
-      // user-stop copy), never auto-relaunch. reconnect() starts a fresh
-      // start-launch on demand. Direct/legacy records keep the pre-0.1.9
-      // bounded relaunch below, byte-identically.
-      if (rec !== null && rec.launchMode === 'start') {
+      // 0.1.21 死亡分支按形态三分流（设计 §3.4 D-1 改动点 1；用户裁决 O-21-1
+      // 2026-09-10：external 形态死亡不自动拉起，各窗口如实进入停止态、由用户
+      // 手动重连）。形态判定依据 = 共享注册表记录 ∨ 本窗口附着记忆
+      // （attachedLaunchMode，改动点 3）：注册表记录可能已被其他窗口先一步清掉
+      // （rec === null），此时只能凭本窗口记忆判定形态。
+      // ADR-21 原裁定（§4.6.5，原 L1124-1148 单窗口语义）逐字保留在分支①：
+      // start 形态（常驻控制台）的死亡与用户关窗不可区分 → 判用户停止、不自动
+      // 拉起；本补丁把判定依据从「仅共享注册表」扩为「共享注册表 ∨ 本窗口
+      // 附着记忆」，使窗口 A 判定用户停止清掉记录后，窗口 B 凭自己的 'start'
+      // 记忆同样不复活用户刚关掉的实例（ADR-21 跨窗口防复活，出处 B）。
+      // 各分支共用 pid 匹配守卫（改动点 2，与 forceRelaunchManaged /
+      // shutdownBookkeeping 的既有同型守卫一致）：仅当注册表现记录仍是本窗口
+      // 判死所依据的 rec 时才清除，防止极端时序下误清其他窗口刚写入的新记录。
+      const recLaunchMode = rec?.launchMode ?? null
+      const clearDeadRecordGuarded = (): boolean => {
+        // 0.1.21 改动点 2: pid 匹配守卫（rec === null = 本窗口判死时无记录可
+        // 对账，不清理——注册表若有记录必属其他窗口，绝不清它）。
+        if (rec === null) return false
+        const inst = readInstance()
+        if (inst.dsh === null || inst.dsh.pid !== rec.pid) return false
+        inst.dsh = null
+        writeInstance(inst)
+        return true
+      }
+      if (recLaunchMode === 'start' || this.attachedLaunchMode === 'start') {
+        // ① start 形态 → ADR-21 用户停止（现状逐字保留；判定依据扩为
+        //    记录 ∨ 记忆，跨窗口防复活）。
         rlog('probe: dsh died or console window closed (indistinguishable); treated as user stop per ADR-21; reconnect to restart')
         this.refreshLaunchInfo({ kind: 'user-stop', rec })
-        const stopped = readInstance()
-        if (stopped.dsh !== null) {
-          stopped.dsh = null
-          writeInstance(stopped)
+        if (clearDeadRecordGuarded()) {
           rlog('probe: ADR-21 user-stop branch cleared the dsh record')
+        } else {
+          rlog('probe: ADR-21 user-stop branch left the dsh record untouched (pid-mismatch guard, 改动点 2 — another window already rewrote it)')
         }
         this.dshPid = null
         this.port = null
         this.url = null
         this.stopProxy()
         this.stopProbe()
+        // 0.1.21 改动点 3（H-5）: 记录生命周期终点 → 附着记忆置 null。
+        this.attachedLaunchMode = null
+        this.attachedChannel = null
         this.setState('stopped')
         return
       }
-      rlog(`probe: dsh dead after ${this.probeFailures} consecutive failures (pid dead=${pidDead}); clearing record + bounded relaunch`)
-      const inst = readInstance()
-      if (inst.dsh) {
-        inst.dsh = null
-        writeInstance(inst)
+      if (recLaunchMode === 'direct' || (rec === null && this.attachedLaunchMode === 'direct')) {
+        // ② 受管直启形态 → 既有 bounded relaunch 现状逐字保留（§二不做清单第 6
+        //    项，用户裁决 O-21-1 边界外；多窗口并发重拉竞态属既有行为，R-9）。
+        rlog(`probe: dsh dead after ${this.probeFailures} consecutive failures (pid dead=${pidDead}); clearing record + bounded relaunch`)
+        if (clearDeadRecordGuarded()) {
+          rlog('probe: direct-death branch cleared the dsh record')
+        } else {
+          rlog('probe: direct-death branch left the dsh record untouched (pid-mismatch guard, 改动点 2)')
+        }
+        this.dshPid = null
+        this.port = null
+        this.url = null
+        this.stopProxy()
+        // 0.1.21 改动点 3（H-5）: 记录已清 → 附着记忆置 null（重拉成功后由
+        // launchManaged 落点重赋值）。
+        this.attachedLaunchMode = null
+        this.attachedChannel = null
+        this.setState('starting')
+        void this.launchManaged()
+        return
+      }
+      // ③ external 记录（无 launchMode）/ 记录已清且本窗口记忆非 direct →
+      //    用户裁决新分支：清记录（pid 守卫）+ 如实进入停止态、不自动拉起
+      //    （O-21-1）。行为与 ADR-21 用户停止分支同构（清记录 + stopped +
+      //    不拉起，复用其清理链），但语义区分：这不是用户停止（实例是自己死的），
+      //    快照走 disconnect 降级档（launchMode=null → 「已断开/异常退出」文案
+      //    + 重连动作），日志行与判定依据（用户裁决）独立注明。
+      rlog('probe: external dsh died; not auto-relaunching (user ruling O-21-1, 2026-09-10); reconnect manually')
+      this.refreshLaunchInfo({ kind: 'disconnect', rec: rec ?? null })
+      if (clearDeadRecordGuarded()) {
+        rlog('probe: external-death branch cleared the dsh record')
+      } else {
+        rlog('probe: external-death branch left the dsh record untouched (pid-mismatch guard, 改动点 2)')
       }
       this.dshPid = null
       this.port = null
       this.url = null
       this.stopProxy()
-      this.setState('starting')
-      void this.launchManaged()
+      this.stopProbe()
+      // 0.1.21 改动点 3（H-5）: 记录生命周期终点 → 附着记忆置 null。
+      this.attachedLaunchMode = null
+      this.attachedChannel = null
+      this.setState('stopped')
+      return
     }
   }
 
@@ -1181,6 +1338,10 @@ export class DshRuntime extends EventEmitter {
     // retained, version/bin cleared, launchMode FORCED null (disconnect keeps
     // the process alive → the UI's "已断开" copy, not the user-stop one).
     this.refreshLaunchInfo({ kind: 'disconnect' })
+    // 0.1.21 改动点 3（H-5）: 本窗口的附着随断开结束 → 附着记忆置 null
+    // （下次 start() 的认领/拉起落点会重新赋值；per-attach 重置亦兜底）。
+    this.attachedLaunchMode = null
+    this.attachedChannel = null
     this.setState('stopped')
   }
 
@@ -1236,6 +1397,10 @@ export class DshRuntime extends EventEmitter {
     this.url = null
     this.dshPid = null
     this.managedBy = null
+    // 0.1.21 改动点 3（H-5）: 记录已清（受控杀）→ 附着记忆置 null；重拉成功
+    // 后由 launchManaged 落点重新赋值（新实例的实际 mode / 实际通道）。
+    this.attachedLaunchMode = null
+    this.attachedChannel = null
     this.setState('starting')
     // ADR-13 (0.1.7): explicit update = FORCED freshness check + in-place
     // refresh of the npx-cached install (best-effort; runs AFTER the old process
@@ -1251,6 +1416,56 @@ export class DshRuntime extends EventEmitter {
       rlog(`forceRelaunchManaged: forced refresh error (best-effort, continuing): ${(err as Error).message}`)
     }
     await this.launchManaged()
+    return 'relaunched'
+  }
+
+  /**
+   * 0.1.21 D-2 改动点 2（设计 §3.4 / §7.1）：「以新通道重启 dsh」专用入口 ——
+   * 与 dsh.restart 的重连语义（永不杀 dsh，P0-D/ADR-2）语义分离（DR-2）。
+   * 执行判定源 = this.options.channel（纯 Node 层不读 vscode 配置；与
+   * `dsh.channel` 设置的同步由 extension.ts 的 onDidChangeConfiguration 接线
+   * 保证——v5 QA H-4 判定源声明：不实现「从配置读取」）。三分流：
+   *  - 非 ready（idle/awaitingChannel/starting/error/stopped）：实例未在运行
+   *    → 转走 dsh.restart 语义（reconnect → start() 四步仲裁以当前配置通道
+   *    拉起；starting 过渡期重复点击的同窗口重入形态由启动锁互斥 + step1/2
+   *    重查兜底，残余窗口与 R-8 同构，设计如实披露、不新增防护）；
+   *  - managed-own（ready）：复用 forceRelaunchManaged 的「受控杀 + 清记录
+   *    （pid 守卫）+ 重新拉起」骨架（K-3：经骨架的直接调用面如实保留）——
+   *    拉起链直接消费 this.options.channel（执行判定源已在手，无需重复
+   *    setChannel），新通道生效后 attachedChannel/快照更新、待生效提示消失；
+   *  - external（或无运行快照）：不代杀（外部实例不代杀红线 P0-D/ADR-2），
+   *    返回 'external-hint' 由 vscode 层给出手动路径指引。
+   */
+  async applyChannelRestart(): Promise<'relaunched' | 'external-hint' | 'noop'> {
+    if (this.state !== 'ready') {
+      rlog(`applyChannelRestart: state=${this.state} (not ready); deferring to the reconnect semantics — the four-step arbitration relaunches with the current channel (dsh.restart 语义)`)
+      await this.reconnect()
+      return 'relaunched'
+    }
+    const configChannel = this.options.channel
+    const runningChannel = this.attachedChannel
+    const action = resolveChannelRestartAction(configChannel, runningChannel, this.managedBy)
+    if (action === 'noop') {
+      // noop 双保险（按钮本就不该渲染）+ 判定源失同步追查锚点（v5 QA H-4）：
+      // 渲染判定源 = vscode 配置直读（webviewDetails），执行判定源 =
+      // this.options.channel——两源失同步的表现是「按钮渲染 pending 但执行
+      // noop」，本行日志含两值供追查。
+      rlog(`applyChannelRestart: noop (configChannel='${configChannel}', runningChannel=${runningChannel === null ? 'null' : `'${runningChannel}'`}) — channels already一致, nothing to do`)
+      return 'noop'
+    }
+    if (action === 'external-hint') {
+      rlog(`applyChannelRestart: external-hint (managedBy=${this.managedBy ?? 'null'}, runningChannel=${runningChannel === null ? 'null' : `'${runningChannel}'`}) — 外部实例不代杀（P0-D/ADR-2）；vscode 层提示手动路径`)
+      return 'external-hint'
+    }
+    // kill-relaunch：受管实例受控杀后以新通道重拉。复用 forceRelaunchManaged
+    // 骨架 —— 其注册表守卫（managed-own + pid 非空）在极端时序下（记录已被
+    // 其他窗口改写）会落 'no-managed' 不杀不拉，如实映射为 noop + rlog 留痕。
+    rlog(`applyChannelRestart: kill-relaunch (configChannel='${configChannel}', runningChannel=${runningChannel === null ? 'null' : `'${runningChannel}'`}) — controlled kill + relaunch with the new channel`)
+    const relaunch = await this.forceRelaunchManaged()
+    if (relaunch === 'no-managed') {
+      rlog('applyChannelRestart: registry guard fired (no managed-own record to kill); nothing done')
+      return 'noop'
+    }
     return 'relaunched'
   }
 
@@ -1283,6 +1498,10 @@ export class DshRuntime extends EventEmitter {
   /** The one effective bookkeeping pass (see shutdownBookkeeping). */
   private shutdownBookkeepingOnce(): boolean {
     rlog(`shutdownBookkeeping: window ${this.options.windowPid}`)
+    // 0.1.21 改动点 3（H-5）: 窗口退出 = 本窗口全部附着生命周期的终点 →
+    // 附着记忆置 null（唯一有效记账轮执行一次即可）。
+    this.attachedLaunchMode = null
+    this.attachedChannel = null
     const inst = readInstance()
     const afterUnregister = unregisterWindow(inst, this.options.windowPid)
     // T2 (ADR-15/18): full stale-window scrub BEFORE the last-window verdict —

@@ -44,6 +44,35 @@ export function normalizeChannelLogLine(raw: string, channel: DshChannel): strin
   return `channel '${raw}' is not a published dist-tag; normalizing to '${channel}' (ADR-29)`
 }
 
+// ---------------------------------------------------------------------------
+// 0.1.21（设计 §3.4 D-2 改动点 1 / §7.1）：通道重启决策点。纯函数 —— 规则
+// 归纯模块、vscode 层只做执行（normalizeChannel 同款分层纪律）。真值表：
+//   通道一致（config === running）→ 'noop'（按钮本就不该渲染，双保险）；
+//   不一致 + managed-own / extension → 'kill-relaunch'（受管实例：受控杀后
+//   以新通道重拉，复用 forceRelaunchManaged 骨架）；
+//   不一致 + external（或无运行快照）→ 'external-hint'（外部实例不代杀红线
+//   P0-D/ADR-2；无运行快照时 managedBy 为 null，同归此档，不自动拉起）。
+// ---------------------------------------------------------------------------
+
+/** 「立即重启以生效」按钮应有的动作（真值表见 resolveChannelRestartAction）。 */
+export type ChannelRestartAction = 'noop' | 'kill-relaunch' | 'external-hint'
+
+/**
+ * 通道重启真值表（唯一决策点；设计与 sim PU-21-6 直接测试对象）。
+ * @param configChannel  执行判定源：将要生效的配置通道（runtime.options.channel）。
+ * @param runningChannel 当前附着实例的真实启动通道（快照真值；未知 = null）。
+ * @param managedBy      当前附着实例的归属（无运行快照 = null）。
+ */
+export function resolveChannelRestartAction(
+  configChannel: string,
+  runningChannel: string | null,
+  managedBy: string | null,
+): ChannelRestartAction {
+  if (configChannel === runningChannel) return 'noop'
+  if (managedBy === 'managed-own' || managedBy === 'extension') return 'kill-relaunch'
+  return 'external-hint'
+}
+
 /** QuickPick item shape the injected `pick` dep consumes. */
 export interface ChannelPickItem {
   label: string

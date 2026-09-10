@@ -82,8 +82,15 @@ export interface DshLaunchInfo {
   binDir: string | null
   /** dsh bin script full path (= DshBinInfo.binJs); unresolved → null. */
   dshBin: string | null
-  /** Version channel (config passthrough: 'latest' | 'preview' | exact). */
-  channel: string
+  /**
+   * 版本通道。0.1.21 语义修订（设计 §3.4 D-2 改动点 5 / §7.1，CR-8）：从「配置
+   * 直通回显」改为「运行实例的真实启动通道」（string | null）——快照只陈述运行
+   * 实例的事实：managed 拉起 = 拉起时配置值；adopt = 注册表记录值；external
+   * 接管 / 旧记录缺省 / 尚未附着 = null（渲染「未知」，待生效判定恒真——
+   * 绝不回退配置值，否则「用户改配置后重连 adopt 旧通道实例」场景会把待生效
+   * 提示抹掉，正是失效形态）。
+   */
+  channel: string | null
   /** Resolver mode for this session; unresolved → null. */
   resolverMode: 'steady' | 'refreshed' | 'established' | null
   /** Latest channel-level update check (meta file lastCheckAt); meta missing → null. */
@@ -162,12 +169,15 @@ export interface LaunchInfoInput {
     launchMode?: 'start' | 'direct'
     /** 0.1.16: process creation instant (ISO-8601 UTC) — pass-through, #98. */
     processStartedAt?: string | null
+    /** 0.1.21: the channel the record's dsh was actually launched with. */
+    channel?: string
   } | null
   /** Runtime state surface (fallbacks when rec is absent). */
   port?: number | null
   pid?: number | null
   managedBy?: 'extension' | 'external' | 'managed-own' | null
-  channel?: string
+  /** 0.1.21: 运行实例的真实启动通道（真值；未知/未附着 = null，不回退配置）。 */
+  channel?: string | null
   /** External takeover command line (truncated to 300 here, defensively). */
   externalCommandLine?: string | null
   /** 0.1.14: token-contract (T path) external URL; degraded snapshots force null. */
@@ -314,7 +324,10 @@ export function buildLaunchInfo(input: LaunchInfoInput): DshLaunchInfo {
     versionCrossCheck: crossCheckVersions(dshVersion, resolverVersion),
     binDir: resolved?.dir ?? null,
     dshBin: resolved?.binJs ?? null,
-    channel: input.channel ?? '',
+    // 0.1.21（改动点 5 / CR-8）: channel = 调用方传入的运行实例真值
+    // （this.attachedChannel），未知 = null（渲染「未知」+ 待生效恒真）；
+    // 不再 `?? ''` 配置直通回显（absent 输入同归 null，诚实缺省）。
+    channel: input.channel ?? null,
     resolverMode: resolved?.mode ?? null,
     lastCheckAt: typeof input.meta?.lastCheckAt === 'string' ? input.meta.lastCheckAt : null,
     launchMode,
