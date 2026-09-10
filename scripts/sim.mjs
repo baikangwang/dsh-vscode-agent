@@ -104,6 +104,21 @@
 // step with the version bump — commit 482b1de missed it, closed in rework r1.
 // 0.1.21 fix round (deploy r1): PU-9③d 0.1.20 → 0.1.21 moved in step with the
 // version bump (same sanctioned baseline migration, chain tail 6b8f61d).
+// 0.1.21 test round (design §7.2, chain tail 6b8f61d): PU-21-1..12 — the
+// multi-window convergence / channel-restart fix family (O-21-1 user ruling =
+// external death auto-relaunches NOTHING, 60s lock-wait budget unchanged).
+// PU-21-1/5 count spawns via the RuntimeOptions.dshProcessFactory injection
+// seam (implementation checklist #8); PU-21-2..5 drive the three-way death
+// branch with real dead pids; PU-21-6..11 direct-test the decision table /
+// applyChannelRestart three-way / snapshot truth / the pinned reconnect
+// boundary; PU-21-12 carries the message-whitelist + wiring statics and the
+// corrected PU-10-2② baseline (pending button now data-action=
+// "apply-channel-restart" per design 改动点 4 — the old data-action="restart"
+// literal was the root cause of the 4-item cascade FAIL). QA deploy r1 PD-7:
+// the three family-aggregation checks (0.1.15/0.1.16/PU-13) now compare
+// against a block-start failures baseline (family-local count) instead of the
+// global counter — the old global reading mislabeled cross-family failures as
+// the family's own regression.
 // 0.1.18 fix round (F1-F5, per docs/0.1.18问题分析 §5.1): F1 mock lifecycle
 // isolation (the multi-window kill path restores the mock right after the
 // block; P0-I-2/3 seeds its OWN live mock on 45680 so no block inherits a dead
@@ -3817,6 +3832,10 @@ async function main() {
     //    捕获真实调用序（比纯静态强；静态面仍按 E-SIM-1 先例保留交叉一致性）。
 
     // -- 0.1.15 共享装置：完整 launchInfo 样例（详情卡 render 输入）------------
+    // PD-7（0.1.21 QA 部署检查 SUGGESTION）：家族聚合检查改「家族内失败计数」
+    // ——原判定 `failures === 0` 是全局聚合计数，检查名只列本组家族，读名会
+    // 误判「家族自身回归」；基线快照后比对，家族外失败不再计入本组标记。
+    const failuresAt15 = failures
     const makeCardInfo15 = () => ({
       dshVersion: '0.1.2-alpha.3', resolverVersion: null, resolverMode: null, versionCrossCheck: 'self-only',
       binDir: null, dshBin: null, port: up.port, pid: process.pid, managedBy: 'managed-own',
@@ -4225,8 +4244,9 @@ async function main() {
         cardCh11.includes('data-action="set-channel" data-channel="alpha" disabled') &&
         cardCh11.includes('data-action="set-channel" data-channel="latest"') &&
         cardCh11.includes('data-action="set-channel" data-channel="next"'))
-      check('PU-10-2② 待重启高亮：configChannel≠运行中 → 「立即重启以生效」（复用既有 restart 动作；不自动重启）',
-        cardCh11.includes('<button class="primary" data-action="restart">立即重启以生效</button>'))
+      check('PU-10-2② 待重启高亮：configChannel≠运行中 → 「立即重启以生效」（0.1.21 改动点 4 起 = 专用 apply-channel-restart 动作；语义分离于 restart 的重连，设计 PU-21-12 按新动作改写原 restart 断言）',
+        cardCh11.includes('<button class="primary" data-action="apply-channel-restart">立即重启以生效</button>') &&
+        !cardCh11.includes('data-action="restart">立即重启以生效'))
       const cardSync11 = buildDetailsHtml(makeCardInfo15(), 'ready', { cspSource: CSP11, configChannel: 'alpha' })
       check('PU-10-2③ 通道一致 → 零待重启高亮面（判定 = config 通道 ≠ 运行中快照通道）',
         !cardSync11.includes('立即重启以生效'))
@@ -4361,7 +4381,8 @@ async function main() {
 
     // ---- 0.1.15 新组聚合检查 ----------------------------------------------------
     px('0.1.15 新组聚合检查（PP-10/PU-10/PP-11/PU-11 全组此前没有失败，含既有族）')
-    check('#88/#92 聚合检查：PP-10 + PU-10 + PP-11 + PU-11 与既有全族没有失败', failures === 0)
+    check('#88/#92 聚合检查：PP-10 + PU-10 + PP-11 + PU-11 与既有全族没有失败（PD-7：本组块起点基线比对，家族内计数）',
+      failures === failuresAt15)
 
     // ==================== 0.1.16 additions (#96/#97/#98, design §八/§九) ======
     // PP-12 进程启动时刻数据链（判据来源：docs/0.1.16修复设计-视图页签标题与
@@ -4372,6 +4393,8 @@ async function main() {
     //    0.1.15 spy-marks 先例同型）+ processStartQuery 注入 + .sim-tmp 注册表
     //    隔离（DSH_VSCODE_DATA_DIR env，顶部已设）。
     px('PP-12 进程启动时刻数据链（#96/#97/#98：formatLocalTimestamp 纯函数 + launchInfo 第 17 字段透传 + G3 查询注入面 + writeRegistry keep/fresh）')
+    // PD-7：家族内计数基线（同 0.1.15 家族口径）
+    const failuresAt16 = failures
     {
       // ---- PP-12-1: formatLocalTimestamp 纯函数 ------------------------------
       const p212 = (n) => String(n).padStart(2, '0')
@@ -4469,7 +4492,8 @@ async function main() {
 
     // ---- 0.1.16 新组聚合检查 ----------------------------------------------------
     px('0.1.16 新组聚合检查（PP-12/PU-12 全组此前没有失败，含既有族）')
-    check('#93-#99 聚合检查：PP-12 + PU-12 与既有全族没有失败', failures === 0)
+    check('#93-#99 聚合检查：PP-12 + PU-12 与既有全族没有失败（PD-7：本组块起点基线比对，家族内计数）',
+      failures === failuresAt16)
 
     // ==================== 0.1.17 additions (#1, design §九 #1/#4) ==============
     // PP-13 WINDOWSAFE 三段检查阈值判定（判据来源：docs/0.1.17调研报告-dsh-0.1.3-
@@ -4550,6 +4574,8 @@ async function main() {
     //    候选链与 tooltip 装配点（statusLine 纯函数无感知，装配在调用方）。
     px('PU-13 external 版本族（0.1.18 ADR-48：五象限装配 + degrade 边界 + 命令行提取 + 只读扫描 + UI 装配 + PU-3④ 基线迁移）')
     {
+      // PD-7：家族内计数基线（同 0.1.15/0.1.16 家族口径；PU-13⑧ 检查消费）
+      const failuresAt13 = failures
       const V_DIR = '0.1.5-alpha.1'
       const V_CMD_ALT = '0.1.1-rc.2'
       const extBase = {
@@ -4769,12 +4795,481 @@ async function main() {
       check('PU-13-7② 诚实性红线：version-big 大字之后必有来源标注行（每个版本值带标注，无裸版本大字）',
         (() => { const m = h7.match(/id="version-big">([^<]*)<\/div>\s*<div class="muted">([^<]*)<\/div>/)
           return m !== null && m[1] === `v${V_DIR}` && m[2].length > 0 })())
-      check('PU-13⑧ 族内零回归标记：PU-13-1..7 此前没有失败（家族回归检查，PU-7/PP-2-8 先例同型）', failures === 0)
+      check('PU-13⑧ 族内零回归标记：PU-13-1..7 此前没有失败（家族回归检查，PD-7：本块起点基线比对，家族内计数）',
+        failures === failuresAt13)
     }
 
     // -- 0.1.14 组清理：关闭 in-process 上游 ----------------------------------
     try { upServer.closeAllConnections() } catch { /* best-effort */ }
     upServer.close()
+  }
+
+  // ==================== 0.1.21 additions (design §7.2, PU-21-1..12) ==========
+  // 多窗口重复拉起 / 通道切换按钮失效修复族的无头回归。判据来源（用例唯一依据）：
+  // docs/0.1.21问题分析-多窗口重复拉起dsh与通道切换按钮失效根因与修复方案.md
+  // v6 §7.2 用例表。关键裁决前提：O-21-1（2026-09-10 用户评审）= external 形态
+  // 死亡**不自动拉起**（如实停止、由用户手动重连）；等锁预算维持 60 秒不新增
+  // 配置（UR-3）。手法：
+  //  - spawn 计数 = RuntimeOptions.dshProcessFactory 注入 seam（实施清单第 8 项
+  //    产出，6b8f61d）：mock start() 真实监听端口（__DSH_BOOT__ 页面）+ 30ms
+  //    持锁窗口，锁输家经 step4（500ms 轮询、注册表+端口双证据）收敛 adopt；
+  //  - 死亡分支三分流（PU-21-2..5）= probeTick 阈值驱动（PP-8-3 同型直驱）+
+  //    真实死 pid（spawnVictim + killAndReap）；
+  //  - PU-21-2 守卫构造 = readInstance 模块导出属性 patch 按调用序注入（E-SIM-1
+  //    先例：probeTick 内 rec 读取与守卫对账之间零 await，第 1 次调用透传真记录、
+  //    第 2 次返回别窗新记录），测完立即恢复；
+  //  - private 字段/方法直读直调（JS 层 private 可调，PP-12-4 / 0.1.15 spy-marks
+  //    先例同型）；
+  //  - PU-21-12 = 消息白名单/接线静态断言 + package.json commands + pending 产物
+  //    HTML（PU-8 类先例），并承接 PU-10-2② 的新动作基线。
+  // 回归核对清单（设计 §7.2 表注）保持绿：PP-2-6、P0-I-2/3/4b、PP-10-4/10-5、
+  // PP-11-4③——分别由上方既有块与 PU-21-12 的集合断言复跑承载。
+  px('PU-21 多窗口收敛与通道应用重启（0.1.21：O-21-1 死亡三分流 + dshProcessFactory spawn 计数 + applyChannelRestart 三分流 + 快照真值 + 接线静态）')
+  {
+    const httpMod21 = require('node:http')
+    const Inst21 = require('../out/instance.js') // readInstance patch 载体（模块单例，属性访问可替换）
+    const CS21 = require('../out/channelSelect.js') // { resolveChannelRestartAction, ... }
+    const PKG21 = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8'))
+    const detailsSrc21 = fs.readFileSync(path.join(process.cwd(), 'src', 'webviewDetails.ts'), 'utf8')
+
+    // -- 装置：临时端口 / mock dsh 进程工厂（spawn 计数 + 真实监听）------------
+    const freePort21 = () => new Promise((resolve) => {
+      const s = httpMod21.createServer()
+      s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => resolve(p)) })
+    })
+    const deadPort21 = await freePort21() // 无监听端口：probeTick 判死 / step2 不命中的确定性载体
+    const bootPage21 = '<html>window.__DSH_BOOT__ = {}</html>'
+    // spawn 计数工厂（PU-21-1/5 断言面；RuntimeOptions.dshProcessFactory 消费面）：
+    // mock start() 同步监听 opts.port + 30ms 持锁窗口 —— 锁赢家落地前输家的
+    // step3 必拿锁失败，落入 step4 轮询（消费注册表 winner 记录收敛）。
+    const makeSpawnCounter21 = () => {
+      let n = 0
+      const calls = []
+      const servers = []
+      const factory = (opts) => ({
+        start: async () => {
+          n++
+          calls.push({ port: opts.port, channel: opts.channel, launchMode: opts.launchMode })
+          const srv = httpMod21.createServer((req, res) => {
+            res.writeHead(200, { 'Content-Type': 'text/html' })
+            res.end(bootPage21)
+          })
+          await new Promise((r2) => srv.listen(opts.port, '127.0.0.1', r2))
+          servers.push(srv)
+          await sleep(30) // widen the lock-held window deterministically
+          return {
+            pid: 4200 + n, servicePid: 4300 + n, port: opts.port,
+            url: `http://127.0.0.1:${opts.port}`,
+            logFile: path.join(dataDir, `pu21-launch-${n}.log`),
+            resolved: null, authToken: null,
+          }
+        },
+      })
+      return {
+        factory,
+        count: () => n,
+        calls,
+        closeAll: () => { for (const s of servers) { try { s.closeAllConnections() } catch { /* best-effort */ } try { s.close() } catch { /* best-effort */ } } },
+      }
+    }
+    // 死 pid（进程级真实死亡，PU-21-2..5 判死前置）
+    const deadVictim21 = spawnVictim()
+    await killAndReap(deadVictim21)
+    const deadPid21 = deadVictim21.pid
+    // 活 pid 窗口（windows[] 注册与 external/managed 记录载体；测完回收）
+    const liveVictims21 = []
+    const livePid21 = () => { const v = spawnVictim(); liveVictims21.push(v); return v.pid }
+    const newRuntime21 = (windowPid, overrides = {}) => newRuntime(windowPid, {
+      probeIntervalSec: 0, processStartQuery: () => null, ...overrides,
+    })
+    const seedRec21 = (rec) => seedInst({ dsh: rec, windows: [] })
+    const extRec21 = (pid, port, extra = {}) => ({
+      pid, port, managedBy: 'external', startedAt: '2026-09-10T07:10:37.985Z', ...extra,
+    })
+
+    // ---- PU-21-5: external 死亡不自动拉起（O-21-1 主断言；先于 PU-21-1 供其衔接）--
+    px('PU-21-5 external 死亡不自动拉起（O-21-1：spawn=0 + 如实停止 + 记录清空 + not auto-relaunching 留痕）')
+    {
+      const counter5 = makeSpawnCounter21()
+      seedRec21(extRec21(deadPid21, deadPort21))
+      const r5 = newRuntime21(process.pid, { port: deadPort21, dshProcessFactory: counter5.factory })
+      r5.state = 'ready'
+      r5.port = deadPort21
+      const off5 = rlogOffset()
+      await r5.probeTick(); await r5.probeTick(); await r5.probeTick() // 阈值 3 次到达
+      check('PU-21-5① 不触发任何拉起：spawn 计数 = 0（dshProcessFactory seam 计数；原 v4「恰一次 managed 拉起」断言随 O-21-1 裁决作废）',
+        counter5.count() === 0)
+      check('PU-21-5② 如实停止：state=stopped（非 starting——不进入任何启动链）', r5.state === 'stopped')
+      check('PU-21-5③ 注册表记录清空（pid 守卫命中路径：external-death branch cleared）',
+        readInstance().dsh === null)
+      check('PU-21-5④ 日志锚：not auto-relaunching（用户裁决 O-21-1）+ reconnect manually（手动重连提示）',
+        rlogSlice(off5).includes('probe: external dsh died; not auto-relaunching (user ruling O-21-1, 2026-09-10); reconnect manually'))
+      r5.dispose()
+      counter5.closeAll()
+    }
+
+    // ---- PU-21-1: 多窗口同时手动重连收敛（O-21-1 终态衔接 + 防重入两支）--------
+    px('PU-21-1 多窗口同时手动重连收敛（external 死亡处置终态 → 两实例同时 start()：恰 1 次 spawn + step4 收敛 adopt + 防重入①②）')
+    {
+      const counter1 = makeSpawnCounter21()
+      // 前置 = PU-21-5 终态：注册表 dsh=null、两实例均 state='stopped'
+      seedRec21(null)
+      const winB21 = livePid21()
+      const rA = newRuntime21(process.pid, { port: await freePort21(), dshProcessFactory: counter1.factory })
+      const rB = newRuntime21(winB21, { port: await freePort21(), dshProcessFactory: counter1.factory })
+      rA.state = 'stopped'; rB.state = 'stopped'
+      // 同时手动重连（dsh.restart → reconnect → start() 的 start() 本体并发）
+      const pA = rA.start()
+      const pB = rB.start()
+      await Promise.all([pA, pB])
+      const inst1 = readInstance()
+      check('PU-21-1① 实际 spawn 触发次数 = 1（锁赢家；输家零 spawn——启动锁互斥，D-1 根因面）',
+        counter1.count() === 1)
+      check('PU-21-1② 两实例均 ready（双结局口径的结局一：赢家 60 秒预算内就绪）',
+        rA.state === 'ready' && rB.state === 'ready')
+      check('PU-21-1③ 收敛同一 port/pid：两实例 dshPid/port 同值且非 null（注册表单条记录）',
+        rA.dshPid !== null && rA.dshPid === rB.dshPid && rA.port === rB.port &&
+        inst1.dsh !== null && inst1.dsh.pid === rA.dshPid)
+      check('PU-21-1④ 新记录带 launchMode 与 channel（managed 写入实际值：direct + 配置通道）',
+        inst1.dsh.launchMode === 'direct' && inst1.dsh.channel === rA.options.channel)
+      check('PU-21-1⑤ windows[] 含两条（两窗口都登记）',
+        inst1.windows.some((w) => w.pid === process.pid) && inst1.windows.some((w) => w.pid === winB21))
+      // 防重入两支用独立单实例场景验证（与主体同一工厂，计数共享可累计对照）：
+      const beforeReentry = counter1.count()
+      const winC21 = livePid21()
+      const rC = newRuntime21(winC21, { port: await freePort21(), dshProcessFactory: counter1.factory })
+      seedRec21(null)
+      const pC1 = rC.start() // 在途：attached=true 已同步置位
+      const pC2 = rC.start() // 第二次直接调用 → 入口守卫（L416 attached||ready）拦截，同步返回
+      await Promise.all([pC1, pC2])
+      check('PU-21-1⑦ 防重入①实测：直接重复调 start() → 第二次被守卫拦截，spawn 增量恰 1、终态 ready',
+        counter1.count() - beforeReentry === 1 && rC.state === 'ready')
+      const winD21 = livePid21()
+      const rD = newRuntime21(winD21, { port: await freePort21(), dshProcessFactory: counter1.factory })
+      seedRec21(null)
+      const beforeReentry2 = counter1.count()
+      const pD1 = rD.reconnect() // reconnect 无条件重置 attached=false 后 start() 在途
+      const pD2 = rD.reconnect() // 快速重复点击：第二次 reconnect 再次重置 attached → start() 不被 attached 守卫拦截（重入）
+      await Promise.all([pD1, pD2])
+      check('PU-21-1⑧ 防重入②实测（v6 QA K-1）：经 reconnect 的快速重复点击 → 第二个 start() 与在途链并发重入，由启动锁互斥 + step1/step2 重查收敛：spawn 增量恰 1、终态 ready（残余竞态窗口例外同 §3.5 断言 B 与 R-8）',
+        counter1.count() - beforeReentry2 === 1 && rD.state === 'ready')
+      rA.dispose(); rB.dispose(); rC.dispose(); rD.dispose()
+      counter1.closeAll()
+    }
+
+    // ---- PU-21-2: 清除守卫（pid 匹配，改动点 2）---------------------------------
+    px('PU-21-2 死亡分支清记录 pid 匹配守卫（别窗新记录不被误清；readInstance 调用序注入第 2 次对账读取）')
+    {
+      const counter2 = makeSpawnCounter21()
+      const otherWin21 = livePid21()
+      seedRec21(extRec21(deadPid21, deadPort21))
+      const r2 = newRuntime21(process.pid, { port: deadPort21, dshProcessFactory: counter2.factory })
+      r2.state = 'ready'
+      r2.port = deadPort21
+      await r2.probeTick(); await r2.probeTick() // probeFailures=2，未达阈值
+      // 第 3 次 probeTick 内 readInstance 调用序：① probeTick 顶层 rec 读取（须仍见
+      // 死记录，否则 pidDead 判假不进死亡分支）→ ② clearDeadRecordGuarded 对账读取
+      // （注入别窗 pid 不同的新记录 → 守卫必命中「不匹配」）。两调用点之间零 await
+      //（分支内同步代码），调用序注入等价于真实并发写窗。
+      const foreignRec21 = { pid: otherWin21, port: deadPort21, managedBy: 'managed-own', startedAt: '2026-09-10T09:00:00.000Z', launchMode: 'direct', channel: 'latest' }
+      const origRead21 = Inst21.readInstance
+      let readN21 = 0
+      Inst21.readInstance = () => {
+        readN21++
+        if (readN21 === 2) return { dsh: foreignRec21, windows: [] }
+        return origRead21()
+      }
+      let guardHit21 = null
+      try {
+        const off2 = rlogOffset()
+        await r2.probeTick()
+        guardHit21 = { off2, rec: readInstance().dsh }
+      } finally {
+        Inst21.readInstance = origRead21
+      }
+      check('PU-21-2① pid 不匹配时不清除：守卫拒绝（注册表未被本窗口清空/改写——注入模型下留存判死旧记录原样；真实交错下留存的是别窗新记录，共同可观察事实 = 清除动作未发生）',
+        guardHit21 !== null && guardHit21.rec !== null &&
+        guardHit21.rec.pid === deadPid21 && guardHit21.rec.managedBy === 'external')
+      check('PU-21-2② 守卫留痕锚：external-death branch left the dsh record untouched (pid-mismatch guard, 改动点 2)',
+        rlogSlice(guardHit21.off2).includes('probe: external-death branch left the dsh record untouched (pid-mismatch guard, 改动点 2)'))
+      check('PU-21-2③ 守卫不改变分支结局：本窗口仍如实进入 stopped（守卫只护注册表，不改状态机）',
+        r2.state === 'stopped')
+      r2.dispose()
+      counter2.closeAll()
+    }
+
+    // ---- PU-21-3: 用户停止豁免回归（ADR-21 零回退）+ 记忆清理点 -------------------
+    px('PU-21-3 用户停止豁免回归（launchMode=start 记录死亡 → ADR-21 分支逐字保留：清记录 + stopped + 零 spawn + 记忆置 null）')
+    {
+      const counter3 = makeSpawnCounter21()
+      seedRec21(extRec21(deadPid21, deadPort21, { managedBy: 'managed-own', launchMode: 'start' }))
+      const r3 = newRuntime21(process.pid, { port: deadPort21, dshProcessFactory: counter3.factory })
+      r3.state = 'ready'
+      r3.port = deadPort21
+      r3.attachedLaunchMode = 'start' // 曾以 start 形态附着（记忆兜底判定面）
+      const off3 = rlogOffset()
+      await r3.probeTick(); await r3.probeTick(); await r3.probeTick()
+      check('PU-21-3① 记录清空 + state=stopped + 零 spawn（ADR-21 用户停止分支零回退）',
+        readInstance().dsh === null && r3.state === 'stopped' && counter3.count() === 0)
+      check('PU-21-3② 日志锚：treated as user stop per ADR-21（分支①判定原样）',
+        rlogSlice(off3).includes('probe: dsh died or console window closed (indistinguishable); treated as user stop per ADR-21; reconnect to restart'))
+      check('PU-21-3③ 记忆清理点（H-5）：死亡分支清记录后 attachedLaunchMode 置 null（遗留 start 记忆不泄漏）',
+        r3.attachedLaunchMode === null && r3.attachedChannel === null)
+      r3.dispose()
+      counter3.closeAll()
+    }
+
+    // ---- PU-21-4: start 模式跨窗口不复活 + 记忆赋值/清理断言面 --------------------
+    px('PU-21-4 start 跨窗口不复活（窗口 B 凭 attachedLaunchMode=start 记忆判用户停止）+ adopt 记忆赋值面 + 各清理点置 null（H-5）')
+    {
+      const counter4 = makeSpawnCounter21()
+      // 主体：窗口 A 判用户停止清掉记录 → 窗口 B（曾认领 start 实例）探针晚到
+      seedRec21(extRec21(deadPid21, deadPort21, { managedBy: 'managed-own', launchMode: 'start' }))
+      const r4a = newRuntime21(process.pid, { port: deadPort21, dshProcessFactory: counter4.factory })
+      r4a.state = 'ready'; r4a.port = deadPort21; r4a.attachedLaunchMode = 'start'
+      await r4a.probeTick(); await r4a.probeTick(); await r4a.probeTick() // A：清记录 + stopped
+      const r4b = newRuntime21(livePid21(), { port: deadPort21, dshProcessFactory: counter4.factory })
+      r4b.state = 'ready'; r4b.port = deadPort21; r4b.attachedLaunchMode = 'start'
+      const off4 = rlogOffset()
+      await r4b.probeTick(); await r4b.probeTick(); await r4b.probeTick() // B：注册表已空
+      check('PU-21-4① 僵尸窗不复活：B 凭记忆判用户停止（state=stopped、spawn 计数 0、记录保持清空）',
+        r4b.state === 'stopped' && counter4.count() === 0 && readInstance().dsh === null)
+      check('PU-21-4② B 同走 ADR-21 用户停止分支（判定依据 = 本窗口附着记忆，注册表 rec===null 时兜底生效）',
+        rlogSlice(off4).includes('treated as user stop per ADR-21'))
+      // 记忆赋值面①：adopt 认领无 launchMode 字段的 external 记录 → 显式置 null
+      const pid4c = liveVictims21[liveVictims21.length - 1].pid // 预置记录与 adopt 的 pid 参数须同源，守卫（rec.pid===pid）才能走认领分支
+      seedRec21(extRec21(pid4c, deadPort21))
+      const r4c = newRuntime21(livePid21(), { port: deadPort21, dshProcessFactory: counter4.factory })
+      r4c.attachedLaunchMode = 'direct' // 预置非 null，验证 adopt 的显式覆盖（非保持原值）
+      await r4c.adopt(deadPort21, pid4c, 'external', 'ok', readInstance().dsh)
+      check('PU-21-4③ adopt 记忆赋值①：认领无 launchMode 字段的 external 记录 → attachedLaunchMode 显式置 null（v5 H-5：非保持原值）',
+        r4c.attachedLaunchMode === null && r4c.attachedChannel === null)
+      // 记忆赋值面②：adopt 认领带字段记录 → 逐字段采信
+      const rec4d = { pid: 5551, port: deadPort21, managedBy: 'managed-own', startedAt: '2026-09-10T09:00:00.000Z', launchMode: 'direct', channel: 'alpha' }
+      const r4d = newRuntime21(livePid21(), { port: deadPort21, dshProcessFactory: counter4.factory })
+      await r4d.adopt(deadPort21, 5551, 'managed-own', 'ok', rec4d)
+      check('PU-21-4④ adopt 记忆赋值②：记录 launchMode/channel 齐全 → 记忆逐字段采信（launchMode=direct、channel=alpha）',
+        r4d.attachedLaunchMode === 'direct' && r4d.attachedChannel === 'alpha')
+      // 记忆赋值面③：记录 pid 与被认领 pid 不一致（stale 记录）→ 字段不采信、同归 null
+      const r4e = newRuntime21(livePid21(), { port: deadPort21, dshProcessFactory: counter4.factory })
+      r4e.attachedLaunchMode = 'start'
+      await r4e.adopt(deadPort21, 5552, 'managed-own', 'ok', rec4d)
+      check('PU-21-4⑤ adopt 记忆赋值③：stale 记录（pid 不一致）字段不采信 → 双记忆显式置 null（快照只陈述运行实例的事实）',
+        r4e.attachedLaunchMode === null && r4e.attachedChannel === null)
+      // 清理点①：disconnect 置 null；清理点②：shutdownBookkeeping 置 null
+      r4d.attachedLaunchMode = 'start'; r4d.attachedChannel = 'alpha'
+      r4d.disconnect()
+      const r4fNull1 = r4d.attachedLaunchMode === null && r4d.attachedChannel === null
+      r4d.attachedLaunchMode = 'direct'; r4d.attachedChannel = 'alpha'
+      r4d.shutdownBookkeeping()
+      check('PU-21-4⑥ 清理时机逐点（H-5）：disconnect 与 shutdownBookkeeping 均将双记忆置 null（记录生命周期终点）',
+        r4fNull1 && r4d.attachedLaunchMode === null && r4d.attachedChannel === null)
+      r4a.dispose(); r4b.dispose(); r4c.dispose(); r4d.dispose(); r4e.dispose()
+      counter4.closeAll()
+    }
+
+    // ---- PU-21-6: 通道重启决策真值表（纯函数）+ runtime noop rlog 断言面 ----------
+    px('PU-21-6 resolveChannelRestartAction 真值表（组合全遍历）+ runtime noop 分支 rlog 留痕（v5 H-4 判定源失同步追查锚）')
+    {
+      const combos21 = []
+      for (const cfg of ['latest', 'alpha']) for (const running of ['latest', 'alpha', null]) for (const mb of ['managed-own', 'extension', 'external', null]) combos21.push([cfg, running, mb])
+      check('PU-21-6① 真值表·通道一致 → noop（config===running 全 managedBy 组合，双保险：按钮本就不该渲染）',
+        combos21.filter(([c, r]) => c === r).every(([c, r, m]) => CS21.resolveChannelRestartAction(c, r, m) === 'noop'))
+      check('PU-21-6② 真值表·不一致 + managed-own/extension → kill-relaunch（受管受控杀重拉）',
+        combos21.filter(([c, r, m]) => c !== r && (m === 'managed-own' || m === 'extension')).every(([c, r, m]) => CS21.resolveChannelRestartAction(c, r, m) === 'kill-relaunch'))
+      check('PU-21-6③ 真值表·不一致 + external/无快照 → external-hint（外部不代杀红线 P0-D/ADR-2）',
+        combos21.filter(([c, r, m]) => c !== r && (m === 'external' || m === null)).every(([c, r, m]) => CS21.resolveChannelRestartAction(c, r, m) === 'external-hint'))
+      // runtime 层 noop：留痕含两判定源值（渲染判定源 = vscode 配置直读，执行判定源 =
+      // this.options.channel，两源失同步的表现 =「按钮渲染 pending 但执行 noop」）
+      const counter6 = makeSpawnCounter21()
+      const r6 = newRuntime21(livePid21(), { port: deadPort21, dshProcessFactory: counter6.factory })
+      r6.state = 'ready'; r6.managedBy = 'managed-own'; r6.attachedChannel = 'latest'
+      const off6 = rlogOffset()
+      const action6 = await r6.applyChannelRestart()
+      check('PU-21-6④ runtime noop 路径：返回 noop + rlog 含 configChannel 与 runningChannel 双值（v5 H-4 断言面）',
+        action6 === 'noop' &&
+        rlogSlice(off6).includes(`applyChannelRestart: noop (configChannel='${r6.options.channel}', runningChannel='latest')`))
+      r6.dispose()
+      counter6.closeAll()
+    }
+
+    // ---- PU-21-7: applyChannelRestart 受管链（kill-relaunch 骨架复用面）----------
+    px('PU-21-7 applyChannelRestart 受管链（managed-own：treeKill 旧 pid + 清记录重写 channel=新值 + launchManaged + 快照更新待生效消失）')
+    {
+      const counter7 = makeSpawnCounter21()
+      const port7 = await freePort21()
+      const victim7 = livePid21()
+      seedRec21({ pid: victim7, port: port7, managedBy: 'managed-own', startedAt: '2026-09-10T09:00:00.000Z', launchMode: 'direct', channel: 'alpha' })
+      const r7 = newRuntime21(process.pid, { port: port7, channel: 'latest', dshProcessFactory: counter7.factory })
+      r7.state = 'ready'; r7.port = port7; r7.managedBy = 'managed-own'
+      r7.dshPid = victim7; r7.attachedChannel = 'alpha'
+      const kills7 = []
+      const origTreeKill21 = DP.treeKill
+      DP.treeKill = (pid) => { kills7.push(pid) } // 受控杀 seam（P0-D 明文例外面；不真杀测试进程）
+      let action7 = null
+      const off7 = rlogOffset()
+      try { action7 = await r7.applyChannelRestart() } finally { DP.treeKill = origTreeKill21 }
+      const rec7 = readInstance().dsh
+      check('PU-21-7① 返回 relaunched：旧 pid 恰受控杀一次（treeKill 以注册表记录 pid 调用）',
+        action7 === 'relaunched' && kills7.length === 1 && kills7[0] === victim7)
+      check('PU-21-7② 注册表清后重写：单条新记录 + channel=latest（managed 写入实际启动通道）+ launchMode 在场 + pid 为 relaunch 后新值（=dshPid，非旧 victim）',
+        rec7 !== null && rec7.channel === 'latest' && rec7.launchMode === 'direct' && rec7.pid === r7.dshPid && rec7.pid !== victim7)
+      check('PU-21-7③ launchManaged 被调恰 1 次：spawn 计数 1 + 工厂收到新通道（执行判定源 = options.channel）',
+        counter7.count() === 1 && counter7.calls[0].channel === 'latest')
+      check('PU-21-7④ 快照通道更新为新值（attachedChannel 落点 → 待生效判定为假，提示自然消失）',
+        r7.launchInfoSnapshot !== null && r7.launchInfoSnapshot.channel === 'latest')
+      check('PU-21-7⑤ kill-relaunch 留痕锚 + 受控杀链日志在案（复用 forceRelaunchManaged 骨架的如实声明）',
+        rlogSlice(off7).includes("applyChannelRestart: kill-relaunch (configChannel='latest', runningChannel='alpha')"))
+      r7.dispose()
+      counter7.closeAll()
+    }
+
+    // ---- PU-21-8: applyChannelRestart 外部形态（不代杀 + 提示）--------------------
+    px('PU-21-8 applyChannelRestart 外部形态（external：返回 external-hint + 零杀 + 记录保留）')
+    {
+      const counter8 = makeSpawnCounter21()
+      const victim8 = livePid21()
+      seedRec21(extRec21(victim8, deadPort21))
+      const r8 = newRuntime21(livePid21(), { port: deadPort21, channel: 'latest', dshProcessFactory: counter8.factory })
+      r8.state = 'ready'; r8.managedBy = 'external'; r8.attachedChannel = 'alpha'
+      const kills8 = []
+      const origTreeKill21 = DP.treeKill
+      DP.treeKill = (pid) => { kills8.push(pid) }
+      let action8 = null
+      const off8 = rlogOffset()
+      try { action8 = await r8.applyChannelRestart() } finally { DP.treeKill = origTreeKill21 }
+      const rec8 = readInstance().dsh
+      check('PU-21-8① 返回 external-hint（vscode 层提示手动路径的判定面）+ 零杀（进程未被 treeKill）',
+        action8 === 'external-hint' && kills8.length === 0)
+      check('PU-21-8② 注册表记录原样保留（pid/managedBy 不变——外部实例永不代杀也不动记录）',
+        rec8 !== null && rec8.pid === victim8 && rec8.managedBy === 'external')
+      check('PU-21-8③ 零 spawn + external-hint 留痕锚（含 managedBy 与 runningChannel 值）',
+        counter8.count() === 0 &&
+        rlogSlice(off8).includes("applyChannelRestart: external-hint (managedBy=external, runningChannel='alpha')"))
+      r8.dispose()
+      counter8.closeAll()
+    }
+
+    // ---- PU-21-9: applyChannelRestart 非存活态（stopped/error/starting 转走 reconnect）--
+    px('PU-21-9 applyChannelRestart 非 ready 分流（stopped/error/starting → 转走 dsh.restart 仲裁语义；starting 过渡期重入由锁互斥 + step1 重查兜底，H-1）')
+    {
+      const counter9 = makeSpawnCounter21()
+      const port9 = await freePort21()
+      // ① stopped 态：转走 reconnect → start() 四步仲裁以新通道拉起（step3 拿锁 → spawn）
+      const r9a = newRuntime21(process.pid, { port: port9, channel: 'latest', dshProcessFactory: counter9.factory })
+      r9a.state = 'stopped'
+      seedRec21(null)
+      const off9a = rlogOffset()
+      const action9a = await r9a.applyChannelRestart()
+      check('PU-21-9① stopped 态：返回 relaunched + 转走 reconnect（rlog 锚含 state=stopped）+ 四步仲裁以新通道拉起（spawn 恰 1、工厂收到 latest）',
+        action9a === 'relaunched' && r9a.state === 'ready' &&
+        rlogSlice(off9a).includes('applyChannelRestart: state=stopped (not ready); deferring to the reconnect semantics') &&
+        counter9.count() === 1 && counter9.calls[0].channel === 'latest')
+      // 注册表换活 pid（mock servicePid 非真实进程；让后续 start() 的 step1 可 adopt）
+      const aliveRec21 = { ...readInstance().dsh, pid: liveVictims21[liveVictims21.length - 1].pid }
+      seedRec21(aliveRec21)
+      // ② error 态：同样转走（start() step1 adopt 已就绪实例，零叠加 spawn）
+      const r9b = newRuntime21(livePid21(), { port: port9, channel: 'latest', dshProcessFactory: counter9.factory })
+      r9b.state = 'error'
+      const off9b = rlogOffset()
+      const action9b = await r9b.applyChannelRestart()
+      check('PU-21-9② error 态：返回 relaunched + 转走 reconnect（rlog 锚含 state=error）+ step1 adopt 收敛零 spawn',
+        action9b === 'relaunched' && r9b.state === 'ready' &&
+        rlogSlice(off9b).includes('applyChannelRestart: state=error (not ready); deferring to the reconnect semantics') &&
+        counter9.count() === 1)
+      // ③ starting 过渡态（H-1 扩展：pending 按钮在 starting 可点的重入形态）：
+      //    同样转走 dsh.restart（非 ready 分流）——本窗在途链的并发由启动锁互斥 +
+      //    step1/step2 重查兜底（§3.4 starting 重入披露；无头构造为无在途链简化形态，
+      //    spawn 主体不叠加 = 不经 kill-relaunch 骨架直接拉起）
+      const r9c = newRuntime21(livePid21(), { port: port9, channel: 'latest', dshProcessFactory: counter9.factory })
+      r9c.state = 'starting'
+      const off9c = rlogOffset()
+      const action9c = await r9c.applyChannelRestart()
+      check('PU-21-9③ starting 态（H-1）：返回 relaunched + 转走 reconnect（rlog 锚含 state=starting）+ 不走杀拉骨架、spawn 主体不叠加（step1 adopt 收敛）',
+        action9c === 'relaunched' && r9c.state === 'ready' &&
+        rlogSlice(off9c).includes('applyChannelRestart: state=starting (not ready); deferring to the reconnect semantics') &&
+        counter9.count() === 1)
+      r9a.dispose(); r9b.dispose(); r9c.dispose()
+      counter9.closeAll()
+    }
+
+    // ---- PU-21-10: 快照通道真实性（记录真值 vs 配置回显分离）----------------------
+    px('PU-21-10 快照通道真实性（① 记录 channel=旧值 → 快照=旧值；② 记录缺省 → 快照=null 渲染「未知」+ 待生效恒真；CR-8 不回退配置值）')
+    {
+      const counter10 = makeSpawnCounter21()
+      const port10 = await freePort21()
+      const boot10 = httpMod21.createServer((req, res) => { res.writeHead(200, { 'Content-Type': 'text/html' }); res.end(bootPage21) })
+      await new Promise((r2) => boot10.listen(port10, '127.0.0.1', r2))
+      // 场景①：managed-own 记录 channel=alpha（真实运行通道）；配置已改 latest
+      seedRec21({ pid: liveVictims21[liveVictims21.length - 1].pid, port: port10, managedBy: 'managed-own', startedAt: '2026-09-10T09:00:00.000Z', launchMode: 'direct', channel: 'alpha' })
+      const r10a = newRuntime21(process.pid, { port: port10, channel: 'latest', dshProcessFactory: counter10.factory })
+      r10a.setChannel('latest') // 用户已改配置（options.channel=latest），进程仍跑 alpha
+      await r10a.reconnect() // 重连认领（state=idle 非 ready → start() step1 adopt）
+      check('PU-21-10① 快照 channel = 记录旧值 alpha（真实运行通道；不回显配置 latest——待生效判定 config≠snapshot 保持为真）',
+        r10a.launchInfoSnapshot !== null && r10a.launchInfoSnapshot.channel === 'alpha' &&
+        r10a.options.channel === 'latest')
+      r10a.dispose()
+      // 场景②：external 记录缺省（无 channel 字段）→ 快照 null（渲染「未知」、待生效恒真）
+      seedRec21(extRec21(liveVictims21[liveVictims21.length - 1].pid, port10))
+      const r10b = newRuntime21(livePid21(), { port: port10, channel: 'latest', dshProcessFactory: counter10.factory })
+      await r10b.reconnect()
+      check('PU-21-10② 缺省场景：快照 channel = null（rec.channel ?? null，诚实缺省不回退配置——v4 QA G-2 修订闭环）',
+        r10b.launchInfoSnapshot !== null && r10b.launchInfoSnapshot.channel === null &&
+        r10b.attachedLaunchMode === null)
+      r10b.dispose()
+      boot10.close(); try { boot10.closeAllConnections() } catch { /* best-effort */ }
+      counter10.closeAll()
+    }
+
+    // ---- PU-21-11: 无 pending 诚实边界（回归钉：探针拆除态现状，O-21-5 另立）------
+    px('PU-21-11 reconnect 无 pending 诚实边界（ready 态静默拦截现状钉住：state 保持 / 探针定时器 null / 无 start 主体日志——防无意回归，修复另立 O-21-5）')
+    {
+      const counter11 = makeSpawnCounter21()
+      const r11 = newRuntime21(livePid21(), { port: deadPort21, dshProcessFactory: counter11.factory })
+      r11.state = 'ready'
+      r11.probeTimer = setInterval(() => {}, 1 << 30) // 预置非 null：断言 stopProbe 后无人恢复
+      const timer11 = r11.probeTimer // 先捕获句柄：护栏清理不依赖 reconnect 后的字段状态
+      const off11 = rlogOffset()
+      try { await r11.reconnect() } finally { clearInterval(timer11) } // 防进程悬挂护栏；断言对象是 probeTimer 字段（须为 null），与句柄清理解耦
+      check('PU-21-11① 现状边界三面：state 保持 ready（无迁移）+ 探针定时器为 null（拆除态）+ 零 spawn',
+        r11.state === 'ready' && r11.probeTimer === null && counter11.count() === 0)
+      check('PU-21-11② 日志面：仅 reconnect: requested 行、无 start: window 主体日志（ready 态入口守卫静默拦截，DR-2/DR-4 保留语义）',
+        rlogSlice(off11).includes('reconnect: requested (never kills dsh)') &&
+        !rlogSlice(off11).includes('start: window '))
+      r11.dispose()
+      counter11.closeAll()
+    }
+
+    // ---- PU-21-12: 消息白名单与接线静态断言（命令注册 / 按钮接线不再只靠 GUI 兜底）--
+    px('PU-21-12 消息白名单与接线静态断言（PP-11-4③ 集合 + package.json commands + pending 产物 HTML + 「未知」渲染闭环，v4 QA G-6）')
+    {
+      const CSP21 = 'https://*.vscode-cdn.net vscode-webview-resource:'
+      const extractScript21 = (html) => { const m = /<script>([\s\S]*?)<\/script>/.exec(html); return m ? m[1] : null }
+      const cardPend21 = buildDetailsHtml(LI.buildLaunchInfo({ channel: 'alpha', managedBy: 'managed-own', selfVersion: '0.1.1-rc.2' }), 'ready', { cspSource: CSP21, configChannel: 'latest' })
+      const cardUnk21 = buildDetailsHtml(LI.buildLaunchInfo({ channel: null, managedBy: 'external', port: 3080, pid: 555, startedAt: '2026-09-10T09:00:00.000Z' }), 'ready', { cspSource: CSP21, configChannel: 'latest' })
+      const cardScript21 = extractScript21(cardPend21)
+      const caseTypes21 = [...new Set([...detailsSrc21.matchAll(/case '([a-zA-Z]+)'/g)].map((m) => m[1]))].sort()
+      const cardTypes21 = [...new Set([...cardScript21.matchAll(/post\(\{ type: '([a-zA-Z]+)'/g)].map((m) => m[1]))].sort()
+      check('PU-21-12① 详情卡上行 type 集合 ≡ onMessage case 集合（PP-11-4③ 复跑）+ 双侧含 applyChannelRestart 且 restart 仍在集合（语义分离：restart 保留重连语义）',
+        JSON.stringify(cardTypes21) === JSON.stringify(caseTypes21) &&
+        cardTypes21.includes('applyChannelRestart') && cardTypes21.includes('restart') &&
+        caseTypes21.includes('applyChannelRestart') && caseTypes21.includes('restart'))
+      check('PU-21-12② package.json commands 声明含 dsh.applyChannel（命令注册静态面）',
+        (PKG21.contributes.commands || []).some((c) => c.command === 'dsh.applyChannel'))
+      check('PU-21-12③ webviewDetails.ts 接线：case applyChannelRestart → executeCommand(dsh.applyChannel)（消息→命令映射静态锚）',
+        detailsSrc21.includes("case 'applyChannelRestart'") && detailsSrc21.includes("executeCommand('dsh.applyChannel')"))
+      check('PU-21-12④ pending 产物按钮 = data-action="apply-channel-restart" + 待生效提示文案（PU-10-2② 新基线的渲染端复核）',
+        cardPend21.includes('<button class="primary" data-action="apply-channel-restart">立即重启以生效</button>') &&
+        cardPend21.includes('（已选「latest」，待重启生效）'))
+      check('PU-21-12⑤ 快照 channel=null 闭环渲染：「当前」行显示「未知」+ 待生效恒真（按钮仍渲染）+ 三通道按钮无 disabled（CR-8 / R-7）',
+        cardUnk21.includes('<b>未知</b>') &&
+        cardUnk21.includes('data-action="apply-channel-restart"') &&
+        !cardUnk21.includes('data-action="set-channel" data-channel="alpha" disabled'))
+    }
+
+    // ---- PU-21 装置回收 --------------------------------------------------------
+    for (const v of liveVictims21) await killAndReap(v)
+    seedRec21(null)
   }
 
   // ---- F3 全卷收口（0.1.18）：runtime error 事件仅允许预期条目 --------------
