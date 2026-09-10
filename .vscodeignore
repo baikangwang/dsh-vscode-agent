@@ -12,4 +12,5 @@ docs/**
 .dsh/**
 .git/**
 .gitignore
+**/.env
 *.vsix
