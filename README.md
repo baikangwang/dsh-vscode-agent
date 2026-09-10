@@ -40,7 +40,7 @@ DeepSeek Harness 的 VSCode 右侧边栏面板：自动启动/复用 `dsh web`�
 **团队安装（GitHub Release 一行命令，自动下载）：**
 
 ```powershell
-$ver = '0.1.20'
+$ver = '0.1.21'
 Invoke-WebRequest "https://github.com/baikangwang/dsh-vscode-agent/releases/download/v$ver/dsh-vscode-agent-$ver.vsix" -OutFile "$env:TEMP\dsh-vscode-agent-$ver.vsix"
 code --install-extension "$env:TEMP\dsh-vscode-agent-$ver.vsix"
 ```
@@ -48,7 +48,7 @@ code --install-extension "$env:TEMP\dsh-vscode-agent-$ver.vsix"
 **本地 VSIX：**
 
 ```powershell
-code --install-extension dsh-vscode-agent-0.1.20.vsix
+code --install-extension dsh-vscode-agent-0.1.21.vsix
 # 或 VSCode 扩展面板 → 「…」→ 从 VSIX 安装…
 ```
 
