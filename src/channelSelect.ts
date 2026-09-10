@@ -57,7 +57,7 @@ export interface ChannelPickItem {
  */
 export function channelPickItems(): ChannelPickItem[] {
   return [
-    { label: 'latest', detail: '稳定通道（rc 版本）——经典启动契约，面板直连可用' },
+    { label: 'latest', detail: '稳定通道（rc 版本）——启动后带访问 token、面板经本地代理接入；首次冷拉取可能需数分钟' },
     { label: 'next', detail: '预发布前瞻——当前与 latest 相同，上游发布新 rc 时先于 latest' },
     {
       label: 'alpha',

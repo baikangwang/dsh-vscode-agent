@@ -482,9 +482,12 @@ export const WINDOWSAFE_MIN_VERSION = '0.1.3-alpha.1'
 /**
  * 0.1.17 #1 (design §九 v3): the START of the hidden-form popup-REGRESSION
  * band. dsh ≥ 0.1.3-alpha.2 native runner reintroduced the upstream popup
- * flash (PR #2825; upstream master unfixed at the time of writing). 上界常量
- * 的改置由用户评审裁决：待上游修复版正式发布后，由用户评审决定上调（或按
- * 裁决移除该检查）——开发侧不自作主张改置。Single-point constant (去硬编码).
+ * flash (PR #2825). Era anchor (0.1.20 O-1): still unfixed as of dsh
+ * 0.1.5-rc.1 (published 2026-09-10) — the regression has now spanned FOUR
+ * published npm versions: 0.1.3-alpha.2, 0.1.5-alpha.1, 0.1.5-alpha.2,
+ * 0.1.5-rc.1. 上界常量的改置由用户评审裁决：待上游修复版正式发布后，由用户
+ * 评审决定上调（或按裁决移除该检查）——开发侧不自作主张改置。Single-point
+ * constant (去硬编码).
  */
 export const WINDOWSAFE_REGRESSION_MIN_VERSION = '0.1.3-alpha.2'
 
@@ -903,7 +906,7 @@ export class DshProcess extends EventEmitter {
       } else if (windowSafe === 'zeroFlash') {
         appendDecisionLog(`[dshProcess] 运行时 ${built.resolved?.version ?? ''}，隐藏形态零闪窗（零闪窗承诺版本区间 [0.1.3-alpha.1, 0.1.3-alpha.2)，上游 PR #3516）`)
       } else if (windowSafe === 'regression') {
-        appendDecisionLog('[dshProcess] WARN: dsh ≥ 0.1.3-alpha.2 native runner 在隐藏形态存在上游弹窗回归（PR #2825 引入，上游 master 未修）；零闪窗仅对 0.1.3-alpha.1 成立，该版本未发布 npm、不可经 npm 安装，建议等待上游修复版')
+        appendDecisionLog('[dshProcess] WARN: dsh ≥ 0.1.3-alpha.2 native runner 在隐藏形态存在上游弹窗回归（PR #2825 引入，截至 0.1.5-rc.1（2026-09-10 发布）仍未修复，已横跨 0.1.3-alpha.2、0.1.5-alpha.1、0.1.5-alpha.2、0.1.5-rc.1 四个已发布版本）；零闪窗仅对 0.1.3-alpha.1 成立，该版本未发布 npm、不可经 npm 安装，建议等待上游修复版')
       }
       // windowSafe === 'unknown' → silent skip (version unresolvable/empty).
     }

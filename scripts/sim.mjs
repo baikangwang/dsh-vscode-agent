@@ -4493,6 +4493,16 @@ async function main() {
     check('PP-13-1⑦ 不可解析安全侧 → unknown（不告警不承诺）：null / 空串 / not-a-version',
       DP.judgeWindowSafeByVersion(null) === 'unknown' && DP.judgeWindowSafeByVersion('') === 'unknown' &&
       DP.judgeWindowSafeByVersion('not-a-version') === 'unknown')
+    // ---- 0.1.20 O-3（设计 §3.4 O-3）：0.1.5-rc.1 归段显式钉住 ------------------
+    // 此前 rc.1 的归段仅由 PP-13-1⑥ 单调性推论覆盖（0.1.4 同理）；钉住后成为
+    // 显式回归基线。期望值引用导出常量（同一版本经同一判定函数落同一档位），
+    // 版本字面仅作测试输入与 check 名称——与本节首注释的既有手法一致。
+    check('PP-13-1⑧ 0.1.5-rc.1 钉住 regression 档（与回归下界常量 WINDOWSAFE_REGRESSION_MIN_VERSION 同档；上游 PR #2825 弹窗回归截至该版仍未修复）',
+      DP.judgeWindowSafeByVersion('0.1.5-rc.1') === 'regression' &&
+      DP.judgeWindowSafeByVersion('0.1.5-rc.1') === DP.judgeWindowSafeByVersion(DP.WINDOWSAFE_REGRESSION_MIN_VERSION))
+    check('PP-13-1⑨ 0.1.5-rc.1 钉住 token 契约档（与 TOKEN_AUTH_MIN_VERSION 同档；latest 默认通道升级跳变到 rc.1 后契约档不变的显式回归基线）',
+      DP.judgeContractByVersion('0.1.5-rc.1') === 'token' &&
+      DP.judgeContractByVersion('0.1.5-rc.1') === DP.judgeContractByVersion(DP.TOKEN_AUTH_MIN_VERSION))
     // ---- PP-13-2: 编译产物静态交叉一致性（E-SIM-1 先例） ------------------------
     {
       const dpSrc17 = fs.readFileSync(path.join(process.cwd(), 'out', 'dshProcess.js'), 'utf8')
@@ -4502,7 +4512,7 @@ async function main() {
       const logs17 = [
         `[dshProcess] 运行时 < ${DP.WINDOWSAFE_MIN_VERSION}，隐藏形态存在上游闪现窗口的取舍`,
         `隐藏形态零闪窗（零闪窗承诺版本区间 [${DP.WINDOWSAFE_MIN_VERSION}, ${DP.WINDOWSAFE_REGRESSION_MIN_VERSION})，上游 PR #3516）`,
-        `WARN: dsh ≥ ${DP.WINDOWSAFE_REGRESSION_MIN_VERSION} native runner 在隐藏形态存在上游弹窗回归`,
+        `WARN: dsh ≥ ${DP.WINDOWSAFE_REGRESSION_MIN_VERSION} native runner 在隐藏形态存在上游弹窗回归（PR #2825 引入，截至 0.1.5-rc.1（2026-09-10 发布）仍未修复，已横跨 ${DP.WINDOWSAFE_REGRESSION_MIN_VERSION}、0.1.5-alpha.1、0.1.5-alpha.2、0.1.5-rc.1 四个已发布版本）`,
       ]
       const guardIdx17 = dpSrc17.indexOf(guard17)
       // 守卫块字符级括号配平（块内字符串花括号均成对：${...}；配平至块闭合）

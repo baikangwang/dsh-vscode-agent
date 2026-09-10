@@ -66,9 +66,12 @@ function readConfig(): Cfg {
     // (WINDOWSAFE_MIN_VERSION / WINDOWSAFE_REGRESSION_MIN_VERSION): < 0.1.3-
     // alpha.1 keeps the known flash trade-off, 0.1.3-alpha.1 is the only
     // zero-flash version (never published to npm), ≥ 0.1.3-alpha.2 carries the
-    // upstream popup regression (PR #2825, master unfixed) — NO "switch back
-    // once upstream fixes windowsHide" promise; placement of the regression
-    // bound awaits the upstream fixed release (user-ruled re-adjudication).
+    // upstream popup regression (PR #2825) — still unfixed as of dsh
+    // 0.1.5-rc.1 (published 2026-09-10), spanning four published versions
+    // (0.1.3-alpha.2, 0.1.5-alpha.1, 0.1.5-alpha.2, 0.1.5-rc.1) — NO "switch
+    // back once upstream fixes windowsHide" promise; placement of the
+    // regression bound awaits the upstream fixed release (user-ruled
+    // re-adjudication).
     consoleVisible: c.get<boolean>('consoleVisible', true),
   }
 }
