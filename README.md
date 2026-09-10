@@ -1,28 +1,31 @@
 # DSH Panel (dsh-vscode-agent)
 
-DeepSeek Harness 的 VSCode 右侧边栏面板：自动启动/复用 `dsh web`，并以内嵌 iframe
+DeepSeek Harness 的 VSCode 右侧边栏面板：自动重连（复用）运行中的 `dsh web`——**不自动启动新实例**（0.1.22 起：自动的只有重连；无运行实例时面板进入停止态，等待自动发现或手动 ▶ 启动 / ⟳ 重连），并以内嵌 iframe
 呈现其 Web UI。**薄壳设计**：不 fork、不打包 DSH 前端，`dsh` 运行时由 npm/npx 托管。
 
 ## 特性
 
 - 右侧边栏（auxiliary bar）双容器页签——「DSH 会话」/「DSH 配置」两个独立视图，启动后自动展开；
-- **应用级生命周期**：第一窗口启动 dsh、后续窗口复用；关闭非最后一个窗口不停，
-  关闭最后一个窗口/VSCode 退出时同步关停（含外部实例接管，带防误杀校验）；
+- **应用级生命周期**：VSCode 启动时自动重连——认领运行中的 dsh（含外部手跑实例），
+  无实例时如实进入停止态、不自动启动（0.1.22：面板呈停止态 + ▶ 启动 / ⟳ 重连
+  双入口，停止态下检测到运行中的 dsh 会自动连接）；后续窗口复用同一实例；
+  关闭非最后一个窗口不停，关闭最后一个窗口/VSCode 退出时同步关停（含外部实例接管，带防误杀校验）；
 - 运行时由 npm/npx 托管：每次启动自动检查 `latest`，离线回退 npx 缓存；
 - 已运行的 dsh（浏览器/npx 启动于 `127.0.0.1:<port>`）直接复用，不重复启动；
 - **常驻服务控制台**（默认开启）：dsh 运行于自持的经典控制台窗（标题
   `dsh service console (DSH Panel)`），其全部子进程共享该控制台，结构性消除
   每次工具调用的闪现窗口；窗内启动即显示静态信息头（窗口身份、关闭后果、本次启动
   日志路径、误关恢复指引；服务实时日志不回显窗内——全部输出重定向至 per-launch
-  log 供取证与排障）；**关闭该窗口 = 用户停止 dsh**（不会自动重拉，面板点 ⟳
-  重连即可按需重启）。极端情况下（探活瞬时误判）可能出现「面板显示已停止而
+  log 供取证与排障）；**关闭该窗口 = 用户停止 dsh**（不会自动重拉；面板点 ▶ 启动
+  新实例，或 ⟳ 重连运行中的实例——0.1.22 起 ⟳ 只认领不拉起）。极端情况下（探活瞬时误判）可能出现「面板显示已停止而
   常驻控制台窗口仍在」——此时点重连即可重新接管，不会误杀存活的 dsh；
 - **dsh 版本与详情可见**：状态栏 `● DSH <端口> · v<版本>`（点击打开详情视图），
   面板工具栏 ⓘ 同样可达；详情卡含版本双源核对、bin 目录（复制/打开）、
   启动方式、端口/pid、启动时间（dsh 进程真实启动时刻，OS 报告，本地
   `yyyy-MM-dd HH:mm:ss` 格式）、resolver 状态与日志文件快捷操作。
 - **dsh 通道选择**：三个发布通道 `latest`/`next`（rc 稳定系）/`alpha`（最新
-  实验系）。首次启动先弹通道选择（选完才启动 dsh；Esc = 沿用当前值、下次
+  实验系）。首次启动先弹通道选择（**选完不自动启动**：面板进停止态并提供
+  ▶ 启动 / ⟳ 重连双入口，0.1.22；Esc = 沿用当前值、下次
   再问）；之后随时可从命令面板 `DSH: 选择 dsh 通道` 更改（改选经重启 dsh
   生效，不自动重启）。旧配置值 `preview` 非有效 dist-tag，运行时按 `latest`
   处理（不写回用户配置）。
@@ -40,7 +43,7 @@ DeepSeek Harness 的 VSCode 右侧边栏面板：自动启动/复用 `dsh web`�
 **团队安装（GitHub Release 一行命令，自动下载）：**
 
 ```powershell
-$ver = '0.1.21'
+$ver = '0.1.22'
 Invoke-WebRequest "https://github.com/baikangwang/dsh-vscode-agent/releases/download/v$ver/dsh-vscode-agent-$ver.vsix" -OutFile "$env:TEMP\dsh-vscode-agent-$ver.vsix"
 code --install-extension "$env:TEMP\dsh-vscode-agent-$ver.vsix"
 ```
@@ -48,7 +51,7 @@ code --install-extension "$env:TEMP\dsh-vscode-agent-$ver.vsix"
 **本地 VSIX：**
 
 ```powershell
-code --install-extension dsh-vscode-agent-0.1.21.vsix
+code --install-extension dsh-vscode-agent-0.1.22.vsix
 # 或 VSCode 扩展面板 → 「…」→ 从 VSIX 安装…
 ```
 
@@ -65,7 +68,7 @@ code --install-extension dsh-vscode-agent-0.1.21.vsix
 | `dsh.channel` | `latest` | 版本通道（`latest` = 正式版 / `next` = rc 稳定系 / `alpha` = 最新实验系；旧值 `preview` 运行时按 `latest` 处理，不写回） |
 | `dsh.channelSelected` | `false` | 首启通道选择已完成标志（首次启动弹通道选择后写入；命令面板重选通道不改此值） |
 | `dsh.command` | 空 | 自定义启动命令，如 `dsh web --port 3080` |
-| `dsh.autoStart` | `true` | VSCode 启动时自动启动/复用 dsh |
+| `dsh.autoStart` | `true` | VSCode 启动时自动重连（复用）运行中的 dsh，**不自动启动**新实例（0.1.22：无运行实例时进入停止态，等待自动发现或手动 ▶ 启动；自动的只有重连） |
 | `dsh.autoOpenPanel` | `true` | 启动后自动展开右侧边栏面板 |
 | `dsh.dshHome` | 空 | DSH_HOME（空 = 默认 `~/.dsh`，与浏览器版共享会话） |
 | `dsh.probeIntervalSec` | `30` | detached dsh 存活探活周期（秒；0 = 关闭探活） |
@@ -73,7 +76,9 @@ code --install-extension dsh-vscode-agent-0.1.21.vsix
 
 ## 命令
 
-- `DSH: Open Panel` / `DSH: Show Details`（dsh 版本/bin 目录/启动方式详情视图）/ `DSH: Restart Runtime`（reconnect，不关停 dsh）/ `DSH: Stop Runtime`（disconnect，不关停 dsh）
+- `DSH: Open Panel` / `DSH: Show Details`（dsh 版本/bin 目录/启动方式详情视图）/ `DSH: Restart Runtime`（兼容入口，重连语义，不关停 dsh）/ `DSH: Stop Runtime`（disconnect，不关停 dsh）
+- `DSH: 重连 dsh（只认领运行实例）`（0.1.22 拆分；面板 ⟳ 同源——有运行实例立即认领、无实例诚实提示，**零拉起**）
+- `DSH: 启动 dsh`（0.1.22 拆分；面板 ▶ 同源——有实例先认领（含外部），无实例拿锁拉起）
 - `DSH: Open in Browser` / `DSH: Update Runtime`（受控重拉 managed dsh；外部 dsh 提示手动 `npx @deepseek-ai/dsh@latest web`）
 - `DSH: 选择 dsh 通道`（重选 `latest`/`next`/`alpha`；经重启 dsh 生效，不自动重启）
 - `DSH: 应用通道并重启 dsh`（以当前配置通道重启受管 dsh——受控杀后按新通道重拉；外部 dsh 不代杀，提示手动停止后面板重连接管）
