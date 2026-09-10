@@ -5296,6 +5296,512 @@ async function main() {
     seedRec21(null)
   }
 
+  // ==================== 0.1.22 additions (design §七, PU-22-1..12) ============
+  // 禁用自动启动与定期自动重连族的无头回归。判据来源（用例唯一依据）：
+  // docs/0.1.22设计方案-禁用自动启动与定期自动重连.md v4 §七 PU-22 用例表
+  //（每条的标签/前置/动作/断言逐字是规格）。关键裁决前提：O-22-a（direct 死亡
+  // 取消自动重拉）、O-22-e（重连/启动两命令拆分）、DR-22-8（启动 = start() 四步
+  // 仲裁既有语义）、DR-22-10（attached 复位七处落点，V3-1）。手法（对齐 PU-21）：
+  //  - spawn 计数 = RuntimeOptions.dshProcessFactory 注入 seam；mock start() 真实
+  //    监听端口（__DSH_BOOT__ 页面）+ 30ms 持锁窗口（锁输家经 step4 收敛 adopt）；
+  //  - 发现探活直驱 discoveryTick()（PP-8-3 probeTick 直驱同型；直驱前显式拆除
+  //    真实 timer 防交错——装置级 probeIntervalSec=0.05 保「发现探活器已武装」
+  //    断言可达，probeIntervalSec=0 的如实关闭形态由 PU-22-8④ 独立覆盖）；
+  //  - 端口命中场景 = 真实 HTTP mock server + 模块导出属性 patch（resolvePortPid /
+  //    processCommandLine，PU-21-2 readInstance patch 同型；CIM 不可用兜底路径与
+  //    沙箱实况同型，测完 finally 恢复）；
+  //  - 死亡判死用真实死 pid（spawnVictim + killAndReap）+ probeTick 直驱 ×3；
+  //  - private 字段/方法直读直调（JS 层 private 可调，PU-21 / PP-12-4 先例同型）。
+  //  - PU-22-8 按设计 §七 =「发现探活器生命周期」；任务派单点名的「激活链与设置
+  //    接线静态断言」并入本用例断言面⑦⑧⑨（不另立编号，设计 §七表格为准）。
+  px('PU-22 禁用自动启动与定期自动重连（0.1.22：激活附着零 spawn + 停止态发现自动认领 + 用户停止守卫 + direct 死亡如实停止 + 发现探活器生命周期 + 两命令拆分接线）')
+  {
+    const httpMod22 = require('node:http')
+    const Inst22 = require('../out/instance.js') // resolvePortPid/processCommandLine patch 载体（模块单例，属性访问可替换）
+    const PM22 = require('../out/panelMessages.js') // { PANEL_MESSAGE_TYPES, routePanelMessage, buttonDisableRules }
+    const PKG22 = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8'))
+    const rtSrc22 = fs.readFileSync(path.join(process.cwd(), 'src', 'runtime.ts'), 'utf8')
+    const extSrc22 = fs.readFileSync(path.join(process.cwd(), 'src', 'extension.ts'), 'utf8')
+    const wvSrc22 = fs.readFileSync(path.join(process.cwd(), 'src', 'webview.ts'), 'utf8')
+
+    // -- 装置：临时端口 / mock boot server / spawn 计数工厂（PU-21 同型）---------
+    const freePort22 = () => new Promise((resolve) => {
+      const s = httpMod22.createServer()
+      s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => resolve(p)) })
+    })
+    const bootPage22 = '<html>window.__DSH_BOOT__ = {}</html>'
+    const bootServers22 = []
+    const mkBoot22 = async (port) => {
+      const srv = httpMod22.createServer((req, res) => {
+        res.writeHead(200, { 'Content-Type': 'text/html' })
+        res.end(bootPage22)
+      })
+      await new Promise((r2) => srv.listen(port, '127.0.0.1', r2))
+      bootServers22.push(srv)
+      return srv
+    }
+    const makeSpawnCounter22 = () => {
+      let n = 0
+      const calls = []
+      const servers = []
+      const factory = (opts) => ({
+        start: async () => {
+          n++
+          calls.push({ port: opts.port, channel: opts.channel, launchMode: opts.launchMode })
+          const srv = httpMod22.createServer((req, res) => {
+            res.writeHead(200, { 'Content-Type': 'text/html' })
+            res.end(bootPage22)
+          })
+          await new Promise((r2) => srv.listen(opts.port, '127.0.0.1', r2))
+          servers.push(srv)
+          await sleep(30) // widen the lock-held window deterministically
+          return {
+            pid: 4400 + n, servicePid: 4500 + n, port: opts.port,
+            url: `http://127.0.0.1:${opts.port}`,
+            logFile: path.join(dataDir, `pu22-launch-${n}.log`),
+            resolved: null, authToken: null,
+          }
+        },
+      })
+      return {
+        factory,
+        count: () => n,
+        calls,
+        closeAll: () => { for (const s of servers) { try { s.closeAllConnections() } catch { /* best-effort */ } try { s.close() } catch { /* best-effort */ } } },
+      }
+    }
+    // 死 pid（进程级真实死亡，PU-22-6/7 判死前置）
+    const deadVictim22 = spawnVictim()
+    await killAndReap(deadVictim22)
+    const deadPid22 = deadVictim22.pid
+    // 活 pid 窗口（windows 注册与活记录载体；测完回收）
+    const liveVictims22 = []
+    const livePid22 = () => { const v = spawnVictim(); liveVictims22.push(v); return v.pid }
+    const deadPort22 = await freePort22() // 无监听端口：probeTick 判死 / step2 不命中 / attachExisting 失败的确定性载体
+    const newRuntime22 = (windowPid, overrides = {}) => newRuntime(windowPid, {
+      probeIntervalSec: 0.05, processStartQuery: () => null, ...overrides,
+    })
+    const seedRec22 = (rec) => seedInst({ dsh: rec, windows: [] })
+    const extRec22 = (pid, port, extra = {}) => ({
+      pid, port, managedBy: 'external', startedAt: '2026-09-10T10:00:00.000Z', ...extra,
+    })
+    // 零 spawn 汇总收集器（PU-22-4 动态断言面）：PU-22-1/2/3 全部停止态自动路径的工厂计数
+    const zeroSpawnCounters22 = []
+
+    // ---- PU-22-1: 激活附着零 spawn（M-1/M-2 双分支；DR-22-10 复位断言）----------
+    px('PU-22-1 激活附着零 spawn（分支 A：无实例失败落 stopped + attached=false 复位（DR-22-10）+ 发现探活器武装；分支 B：注入活记录成功认领 → ready + spawn=0 + 两 timer 互斥）')
+    {
+      // 分支 A（M-2 主断言）：注册表空 + 配置端口无监听（真实 down）
+      const counter1a = makeSpawnCounter22()
+      zeroSpawnCounters22.push(counter1a)
+      seedRec22(null)
+      const r1a = newRuntime22(process.pid, { port: deadPort22, dshProcessFactory: counter1a.factory })
+      const off1a = rlogOffset()
+      const ok1a = await r1a.attachExisting()
+      check('PU-22-1A① 返回 false + spawn 计数 = 0（dshProcessFactory seam 计数；禁用自动启动主断言 M-2）',
+        ok1a === false && counter1a.count() === 0)
+      check('PU-22-1A② state=stopped（如实进入停止态，非 starting/error）', r1a.state === 'stopped')
+      check('PU-22-1A③ attached === false（失败路径复位，DR-22-10/V3-1——后续 ▶/⟳ 恢复入口可达的前提）',
+        r1a.attached === false)
+      check('PU-22-1A④ 注册表 dsh 记录为 null（失败路径不写入）', readInstance().dsh === null)
+      check('PU-22-1A⑤ rlog：attachExisting 锚 + no running dsh found 锚在案 + 无 launchManaged: detached launch 行',
+        rlogSlice(off1a).includes('attachExisting: window ') &&
+        rlogSlice(off1a).includes('attachExisting: no running dsh found; entering stopped (no auto-launch per user policy 2026-09-10)') &&
+        !rlogSlice(off1a).includes('launchManaged: detached launch'))
+      check('PU-22-1A⑥ 发现探活器已武装（discoveryTimer 非 null，setState 挂钩 DR-22-3）+ 存活探活器未武装',
+        r1a.discoveryTimer !== null && r1a.probeTimer === null)
+      r1a.dispose()
+      // 分支 B（M-1 主断言，QA J-3 扩）：注入注册表活记录（真实活 pid + 真实 boot server）
+      const counter1b = makeSpawnCounter22()
+      zeroSpawnCounters22.push(counter1b)
+      const port1b = await freePort22()
+      await mkBoot22(port1b)
+      const pid1b = livePid22()
+      seedRec22(extRec22(pid1b, port1b))
+      const r1b = newRuntime22(livePid22(), { port: port1b, dshProcessFactory: counter1b.factory })
+      const ok1b = await r1b.attachExisting()
+      check('PU-22-1B① 返回 true + state=ready（M-1：激活认领与现状同源，零 spawn）',
+        ok1b === true && r1b.state === 'ready' && counter1b.count() === 0)
+      check('PU-22-1B② 两 timer 互斥：存活探活器已武装 + 发现探活器未武装',
+        r1b.probeTimer !== null && r1b.discoveryTimer === null)
+      check('PU-22-1B③ port/pid 与注入证据一致', r1b.port === port1b && r1b.dshPid === pid1b)
+      r1b.dispose()
+      counter1b.closeAll()
+    }
+
+    // ---- PU-22-2: 停止态发现自动认领（M-6/M-7；discoveryTick 直驱）--------------
+    px('PU-22-2 停止态发现自动认领（场景 A：注册表活记录 M-7；场景 B：端口命中 + CIM 不可用兜底 M-6；直驱 discoveryTick；两 timer 互斥 + 注册表写入本窗口）')
+    {
+      // 场景 A（M-7）：PU-22-1 分支 A 终态（stopped + 武装）→ 注入注册表活记录
+      const counter2a = makeSpawnCounter22()
+      zeroSpawnCounters22.push(counter2a)
+      seedRec22(null)
+      const r2a = newRuntime22(process.pid, { port: deadPort22, dshProcessFactory: counter2a.factory })
+      await r2a.attachExisting() // 前置：失败落 stopped（发现探活器武装）
+      r2a.stopDiscoveryProbe() // 直驱接管：拆真实 timer 防交错（互斥断言独立复核）
+      const port2a = await freePort22()
+      await mkBoot22(port2a)
+      const pid2a = livePid22()
+      seedRec22(extRec22(pid2a, port2a))
+      const off2a = rlogOffset()
+      await r2a.discoveryTick()
+      check('PU-22-2A① state=ready（自动认领完成）+ spawn 计数 = 0（全程零 launchManaged）',
+        r2a.state === 'ready' && counter2a.count() === 0)
+      check('PU-22-2A② port/pid 与证据一致（认领链与 start() step1 同源）',
+        r2a.port === port2a && r2a.dshPid === pid2a)
+      check('PU-22-2A③ 两 timer 互斥：发现探活器已拆除 + 存活探活器已武装',
+        r2a.discoveryTimer === null && r2a.probeTimer !== null)
+      check('PU-22-2A④ 注册表写入本窗口（discoveryAdopt → writeRegistry）',
+        readInstance().dsh !== null && readInstance().dsh.pid === pid2a)
+      check('PU-22-2A⑤ rlog：discovery registry candidate 锚 + adopt 认领行在案',
+        rlogSlice(off2a).includes('discovery: registry candidate') &&
+        rlogSlice(off2a).includes('adopt: external dsh at http://'))
+      r2a.dispose()
+      counter2a.closeAll()
+      // 场景 B（M-6）：注册表空 + 配置端口探测命中（真实 server）+ resolvePortPid
+      // patch（沙箱 netstat 不可用 → 确定性 holder）+ processCommandLine 返回 null
+      //（CIM 不可用兜底路径：页面签名记录 holder pid，step2 同型既有兜底）。
+      // 端口用独立的 portB22（不复用 deadPort22）——deadPort22 须对后续用例保持
+      // 「无监听」语义（PU-22-5/6/7/11/12 前置依赖），server 留待块尾统一回收。
+      const counter2b = makeSpawnCounter22()
+      zeroSpawnCounters22.push(counter2b)
+      seedRec22(null)
+      const portB22 = await freePort22()
+      const r2b = newRuntime22(process.pid, { port: portB22, dshProcessFactory: counter2b.factory })
+      await r2b.attachExisting() // 前置：失败落 stopped（此时端口仍无监听）
+      r2b.stopDiscoveryProbe()
+      await mkBoot22(portB22) // 配置端口复活为真实 boot server（外部手跑同型证据）
+      const holder2b = livePid22()
+      const origResolvePortPid22 = Inst22.resolvePortPid
+      const origProcessCommandLine22 = Inst22.processCommandLine
+      Inst22.resolvePortPid = () => ({ pid: holder2b, address: '127.0.0.1' })
+      Inst22.processCommandLine = () => null
+      const off2b = rlogOffset()
+      try {
+        await r2b.discoveryTick()
+      } finally {
+        Inst22.resolvePortPid = origResolvePortPid22
+        Inst22.processCommandLine = origProcessCommandLine22
+      }
+      check('PU-22-2B① state=ready（端口命中自动认领 M-6）+ spawn 计数 = 0',
+        r2b.state === 'ready' && counter2b.count() === 0)
+      check('PU-22-2B② external 认领落点：managedBy=external + pid=holder（CIM 不可用兜底：页面签名记录 holder pid）',
+        r2b.managedBy === 'external' && r2b.dshPid === holder2b && r2b.port === portB22)
+      check('PU-22-2B③ 两 timer 互斥（ready 落点挂钩已拆除发现探活器）',
+        r2b.discoveryTimer === null && r2b.probeTimer !== null)
+      check('PU-22-2B④ rlog：port candidate 锚 + CIM-unavailable 兜底锚在案',
+        rlogSlice(off2b).includes('discovery: port candidate probe(') &&
+        rlogSlice(off2b).includes('discovery: CIM unavailable; recording holder pid on page-signature basis'))
+      r2b.dispose()
+      counter2b.closeAll()
+    }
+
+    // ---- PU-22-3: 用户停止守卫（M-8；stopRequested + 同 pid 跳过 + rlog 留痕）----
+    px('PU-22-3 用户停止守卫（M-8：disconnect 后同 pid 候选跳过（skip 锚留痕）；记录换 pid 后正常认领）')
+    {
+      const counter3 = makeSpawnCounter22()
+      zeroSpawnCounters22.push(counter3)
+      const port3 = await freePort22()
+      await mkBoot22(port3)
+      const pidX3 = livePid22()
+      seedRec22(extRec22(pidX3, port3))
+      const r3 = newRuntime22(process.pid, { port: port3, dshProcessFactory: counter3.factory })
+      await r3.attachExisting() // 活实例认领 → ready
+      r3.stopProbe() // 拆存活探活器（后续断言对象为发现探活器；认领后 timer 状态独立复核）
+      r3.disconnect() // 用户 ■：stopRequested=true、dshPid=pidX3 保留、记录保留、stopped + 发现探活器武装
+      r3.stopDiscoveryProbe() // 直驱接管
+      const off3a = rlogOffset()
+      await r3.discoveryTick() // 候选 = 同 pid 记录
+      check('PU-22-3① 同 pid 守卫跳过：state 保持 stopped + 零 spawn + rlog 含 skip 锚（M-8 主断言）',
+        r3.state === 'stopped' && counter3.count() === 0 &&
+        rlogSlice(off3a).includes('discovery: skip re-adopting the manually detached instance (same pid); reconnect manually'))
+      // 换 pid：注册表记录换成新活实例 → 正常认领
+      const pidY3 = livePid22()
+      const portY3 = await freePort22()
+      await mkBoot22(portY3)
+      seedRec22(extRec22(pidY3, portY3))
+      const off3b = rlogOffset()
+      await r3.discoveryTick()
+      check('PU-22-3② 换 pid 正常认领：state=ready + 零 spawn + 指向新实例（stopRequested 经 beginAttachment 重置）',
+        r3.state === 'ready' && counter3.count() === 0 && r3.dshPid === pidY3 && r3.port === portY3)
+      check('PU-22-3③ 认领段无 skip 锚（守卫未误拦换 pid 候选）',
+        !rlogSlice(off3b).includes('discovery: skip re-adopting the manually detached instance'))
+      r3.dispose()
+      counter3.closeAll()
+    }
+
+    // ---- PU-22-4: 零 spawn 红线汇总（动态汇总 + 结构性静态断言）------------------
+    px('PU-22-4 零 spawn 红线汇总（动态：PU-22-1/2/3 全部停止态自动路径 launchManaged 调用总数 = 0；静态：discoveryTick/discoveryAdopt/attachExisting 方法体不含 launchManaged）')
+    {
+      const bodyOf22 = (startAnchor, endAnchor) => {
+        const i = rtSrc22.indexOf(startAnchor)
+        if (i < 0) return null
+        const j = rtSrc22.indexOf(endAnchor, i + startAnchor.length)
+        return j > i ? rtSrc22.slice(i, j) : null
+      }
+      const bodyTick22 = bodyOf22('private async discoveryTick(', 'private async discoveryAdopt(')
+      const bodyAdopt22 = bodyOf22('private async discoveryAdopt(', 'private async probeTick(')
+      const bodyAttach22 = bodyOf22('async attachExisting(): Promise<boolean> {', '/** Called once per extension activation')
+      // 断言检测调用形态 'launchManaged('（方法体切片可能携带 JSDoc 注释文字
+      // 「不含 launchManaged 调用」——注释不是调用，不算触线）。
+      check('PU-22-4① 静态：discoveryTick 方法体提取成功且不含 launchManaged 调用（零 spawn 结构红线，§4.2 第 4 条）',
+        bodyTick22 !== null && !bodyTick22.includes('launchManaged('))
+      check('PU-22-4② 静态：discoveryAdopt 方法体提取成功且不含 launchManaged 调用',
+        bodyAdopt22 !== null && !bodyAdopt22.includes('launchManaged('))
+      check('PU-22-4③ 静态：attachExisting 方法体提取成功且不含 launchManaged 调用（与 PU-22-11 静态面共用）',
+        bodyAttach22 !== null && !bodyAttach22.includes('launchManaged('))
+      check(`PU-22-4④ 动态汇总：${zeroSpawnCounters22.length} 个停止态自动路径工厂（PU-22-1A/1B/2A/2B/3）spawn 计数全部 = 0`,
+        zeroSpawnCounters22.length === 5 && zeroSpawnCounters22.every((c) => c.count() === 0))
+    }
+
+    // ---- PU-22-5: 多窗口手动启动收敛（衔接 PU-22-1 分支 A；PU-21-1 同型）--------
+    px('PU-22-5 多窗口手动启动收敛（两实例 attachExisting 失败双双 stopped（attached 复位——DR-22-10 复位前 start() 被 L416 拦截，本断言不可能达成）→ 并发 start() 恰 1 次 spawn；PU-21-1 同型）')
+    {
+      const counter5 = makeSpawnCounter22()
+      seedRec22(null)
+      const winB5 = livePid22()
+      const r5a = newRuntime22(process.pid, { port: await freePort22(), dshProcessFactory: counter5.factory })
+      const r5b = newRuntime22(winB5, { port: await freePort22(), dshProcessFactory: counter5.factory })
+      const ok5a = await r5a.attachExisting()
+      const ok5b = await r5b.attachExisting()
+      check('PU-22-5① 前置可达（DR-22-10/V3-1 复位钉）：两实例 attachExisting 失败落 stopped + attached === false',
+        ok5a === false && ok5b === false && r5a.state === 'stopped' && r5b.state === 'stopped' &&
+        r5a.attached === false && r5b.attached === false)
+      r5a.stopDiscoveryProbe(); r5b.stopDiscoveryProbe() // 并发 start() 前拆真实 timer（断言确定性）
+      const p5a = r5a.start()
+      const p5b = r5b.start()
+      await Promise.all([p5a, p5b])
+      const inst5 = readInstance()
+      check('PU-22-5② 恰 1 次 spawn（锁赢家；启动锁互斥）', counter5.count() === 1)
+      check('PU-22-5③ 两实例 ready 于同一 port/pid（step4 收敛 adopt；注册表单条记录）',
+        r5a.state === 'ready' && r5b.state === 'ready' &&
+        r5a.dshPid !== null && r5a.dshPid === r5b.dshPid && r5a.port === r5b.port)
+      check('PU-22-5④ windows[] 含两条（两窗口都登记）',
+        inst5.windows.some((w) => w.pid === process.pid) && inst5.windows.some((w) => w.pid === winB5))
+      r5a.dispose(); r5b.dispose()
+      counter5.closeAll()
+    }
+
+    // ---- PU-22-6: direct 死亡如实停止（O-22-a 取消重拉；DR-22-10 复位钉）---------
+    px('PU-22-6 direct 死亡如实停止（O-22-a：spawn=0 + stopped + attached=false 复位（DR-22-10/V3-1）+ 记录清空（pid 守卫）+ not auto-relaunching direct 锚 + 发现探活器武装）')
+    {
+      const counter6 = makeSpawnCounter22()
+      seedRec22(extRec22(deadPid22, deadPort22, { managedBy: 'managed-own', launchMode: 'direct' }))
+      const r6 = newRuntime22(process.pid, { port: deadPort22, dshProcessFactory: counter6.factory })
+      r6.state = 'ready'
+      r6.port = deadPort22
+      const off6 = rlogOffset()
+      await r6.probeTick(); await r6.probeTick(); await r6.probeTick() // 判死阈值 3 次到达
+      check('PU-22-6① spawn 计数 = 0（不重拉；bounded relaunch 已取消，O-22-a 2026-09-10）',
+        counter6.count() === 0)
+      check('PU-22-6② 如实停止：state=stopped', r6.state === 'stopped')
+      check('PU-22-6③ attached === false（死亡分支②清理链复位，DR-22-10/V3-1——死亡后 ▶ 启动恢复可达的前提）',
+        r6.attached === false)
+      check('PU-22-6④ 注册表记录清空（pid 守卫命中路径：direct-death branch cleared）',
+        readInstance().dsh === null)
+      check('PU-22-6⑤ rlog：not auto-relaunching direct 锚（用户策略 2026-09-10）',
+        rlogSlice(off6).includes('probe: direct-mode dsh died; not auto-relaunching (user policy 2026-09-10); reconnect manually'))
+      check('PU-22-6⑥ 发现探活器武装（discoveryTimer 非 null；stopped 落点挂钩——发现探活接力自动认领新实例）',
+        r6.discoveryTimer !== null)
+      r6.dispose()
+      counter6.closeAll()
+    }
+
+    // ---- PU-22-7: start 死亡后停止态不复活（ADR-21 回归 + DR-22-10 复位钉）------
+    px('PU-22-7 start 死亡后停止态不复活（ADR-21 分支①回归：attached=false 复位（DR-22-10）+ 无对象静默等待 + 有新记录才认领（两分支））')
+    {
+      const counter7 = makeSpawnCounter22()
+      seedRec22(extRec22(deadPid22, deadPort22, { managedBy: 'managed-own', launchMode: 'start' }))
+      const r7 = newRuntime22(process.pid, { port: deadPort22, dshProcessFactory: counter7.factory })
+      r7.state = 'ready'
+      r7.port = deadPort22
+      await r7.probeTick(); await r7.probeTick(); await r7.probeTick() // ADR-21 用户停止处置完成
+      check('PU-22-7① ADR-21 处置零回退：stopped + 记录清空 + attached === false（死亡分支①清理链复位，DR-22-10/V3-1）+ 零 spawn',
+        r7.state === 'stopped' && readInstance().dsh === null && r7.attached === false && counter7.count() === 0)
+      r7.stopDiscoveryProbe() // 直驱接管
+      // 分支①：注册表空 + 配置端口无监听 → 无对象静默等待
+      const off7a = rlogOffset()
+      await r7.discoveryTick()
+      check('PU-22-7② 无对象静默等待：state 保持 stopped + 零 spawn + 无认领日志（发现探活器不复活用户停止形态）',
+        r7.state === 'stopped' && counter7.count() === 0 &&
+        !rlogSlice(off7a).includes('adopt: ') && !rlogSlice(off7a).includes('discovery: registry candidate'))
+      // 分支②：写入新活记录 → 认领
+      const port7 = await freePort22()
+      await mkBoot22(port7)
+      const pid7 = livePid22()
+      seedRec22(extRec22(pid7, port7))
+      await r7.discoveryTick()
+      check('PU-22-7③ 有新记录才认领：state=ready + 零 spawn + 指向新实例（「无对象」与「有对象」两分支区分）',
+        r7.state === 'ready' && counter7.count() === 0 && r7.dshPid === pid7)
+      r7.dispose()
+      counter7.closeAll()
+    }
+
+    // ---- PU-22-8: 发现探活器生命周期（设计 §七）+ 激活链与设置接线静态断言 -------
+    px('PU-22-8 发现探活器生命周期（stopped 武装 / 离开拆除 / dispose 拆除 / probeIntervalSec=0 如实关闭 / 防重入 no-op）+ 激活链与设置接线静态断言（attachExisting 激活链、dsh.autoStart 描述、channelSelected=false 分支不动）')
+    {
+      const counter8 = makeSpawnCounter22()
+      const r8a = newRuntime22(livePid22(), { port: deadPort22, dshProcessFactory: counter8.factory })
+      r8a.setState('stopped') // 武装
+      check('PU-22-8① 进入 stopped 即武装（setState 单点挂钩，DR-22-3——防逐落点手工武装漏挂）',
+        r8a.discoveryTimer !== null)
+      r8a.setState('ready') // 认领成功落点同型迁移
+      check('PU-22-8② 离开 stopped 即拆除（ready 态 discoveryTimer = null；与存活探活器互斥）',
+        r8a.discoveryTimer === null)
+      r8a.setState('stopped')
+      r8a.dispose()
+      check('PU-22-8③ dispose 拆除（生命周期终点不悬挂）', r8a.discoveryTimer === null)
+      const r8b = newRuntime22(livePid22(), { port: deadPort22, probeIntervalSec: 0, dshProcessFactory: counter8.factory })
+      r8b.setState('stopped')
+      check('PU-22-8④ probeIntervalSec=0：stopped 态 discoveryTimer 为 null（既有「关闭探活」语义一并关闭，如实关闭）',
+        r8b.discoveryTimer === null)
+      r8b.dispose()
+      // 防重入：discoveryInFlight 置位时直驱为 no-op（discoveryInFlight 守卫，§4.2 第 3 条）
+      const port8c = await freePort22()
+      await mkBoot22(port8c)
+      const pid8c = livePid22()
+      seedRec22(extRec22(pid8c, port8c))
+      const r8c = newRuntime22(livePid22(), { port: port8c, dshProcessFactory: counter8.factory })
+      r8c.setState('stopped')
+      r8c.stopDiscoveryProbe() // 拆真实 timer 保直驱确定性
+      r8c.discoveryInFlight = true
+      await r8c.discoveryTick()
+      check('PU-22-8⑤ 防重入：discoveryInFlight 置位时 discoveryTick 为 no-op（state 保持 stopped、零认领）',
+        r8c.state === 'stopped' && counter8.count() === 0)
+      r8c.discoveryInFlight = false
+      await r8c.discoveryTick()
+      check('PU-22-8⑥ 对照：清除在途标志后同条件 tick 正常认领（no-op 归因于防重入守卫，非发现判定失效）',
+        r8c.state === 'ready' && r8c.dshPid === pid8c)
+      r8c.dispose()
+      counter8.closeAll()
+      // 激活链与设置接线静态断言（任务派单断言面并入本用例）
+      check('PU-22-8⑦ 激活链：channelSelected=true 分支 = attachExisting（只认领不拉起，不自动启动）',
+        extSrc22.includes('void runtime.attachExisting().then('))
+      check('PU-22-8⑧ 激活链：channelSelected=false 分支 enterAwaitingChannel 不动（面板选择卡既有语义保留）',
+        extSrc22.includes('runtime.enterAwaitingChannel()'))
+      check('PU-22-8⑨ dsh.autoStart 描述含「不自动启动」语义（无条件断言，V3-4 去条件括注）',
+        ((PKG22.contributes.configuration.properties || {})['dsh.autoStart'] || { description: '' }).description.includes('不自动启动'))
+    }
+
+    // ---- PU-22-9: 选通道不自动拉起（静态断言；runtime 层失败落点并入 PU-22-1A②）--
+    px('PU-22-9 选通道不自动拉起（静态：onChooseChannel 体内含 attachExisting ×3 出口、不含裸 this.runtime.start()（QA J-1 三出口）；「先选择通道、后连接」锚在案）')
+    {
+      const i0wv = wvSrc22.indexOf('private async onChooseChannel(')
+      const i1wv = wvSrc22.indexOf('private clearAckTimer(', i0wv > 0 ? i0wv : 0)
+      const body9 = i0wv > -1 && i1wv > i0wv ? wvSrc22.slice(i0wv, i1wv) : null
+      check('PU-22-9① onChooseChannel 方法体提取成功且含 attachExisting（选通道落点改写为只认领）',
+        body9 !== null && body9.includes('attachExisting'))
+      check('PU-22-9② 体内不含裸 this.runtime.start()（QA J-1：写失败/稍后再说出口同改，自动 spawn 隐蔽路径消除）',
+        body9 !== null && !body9.includes('this.runtime.start()'))
+      check('PU-22-9③ 三个出口全部覆盖：attachExisting 调用恰 3 处（稍后再说 / 写设置失败 / 成功写设置）',
+        body9 !== null && (body9.match(/this\.runtime\.attachExisting\(\)/g) || []).length === 3)
+      check('PU-22-9④ 「先选择通道、后连接」顺序锚在案（JSDoc 注释 + panelLog 留痕：attach AFTER the writes; no auto-launch）',
+        body9 !== null && body9.includes('先选择通道、后连接') && body9.includes('attach AFTER the writes; no auto-launch'))
+    }
+
+    // ---- PU-22-10: 停止态文案与拆分接线静态断言（含 error 相位，V3-3）------------
+    px('PU-22-10 停止态文案与拆分接线静态断言（overlay 中文文案 + 详情卡 stopped/error 相位双按钮 + buttonDisableRules 关键格 + package.json 两命令 + extension.ts 注册落点 + dsh.autoStart）')
+    {
+      const CSP22 = 'https://*.vscode-cdn.net vscode-webview-resource:'
+      const panelStopped10 = buildPanelHtml('http://127.0.0.1:45678', CSP22, 'stopped')
+      const cardStopped10 = buildDetailsHtml(LI.buildLaunchInfo({ channel: 'alpha', managedBy: 'managed-own', selfVersion: '0.1.22-rc.1' }), 'stopped', { cspSource: CSP22, configChannel: 'latest' })
+      const cardError10 = buildDetailsHtml(null, 'error', { errorMessage: 'boom after 90s' })
+      check('PU-22-10① overlay：stopped 态中文文案（「dsh 已停止」+ ▶/⟳ 双入口指引 + 自动连接说明；不再是英文 stopped 字面量）',
+        panelStopped10.includes('dsh 已停止') &&
+        panelStopped10.includes('点 ▶ 启动新实例，或 ⟳ 重连运行中的实例；检测到运行中的 dsh 会自动连接'))
+      check('PU-22-10② 详情卡 stopped 相位：「自动连接」提示行 + 重连/启动双按钮（data-action="reconnect"/"start"）',
+        cardStopped10.includes('检测到运行中的 dsh 实例时会自动连接') &&
+        cardStopped10.includes('data-action="reconnect">重连') && cardStopped10.includes('data-action="start">启动'))
+      check('PU-22-10③ 详情卡 error 相位（V3-3）：「启动 dsh（重试）」+「重连」双按钮（data-action="start"/"reconnect"）、不含 data-action="restart"（旧「重试（重启 dsh）」移除）',
+        cardError10.includes('data-action="start">启动 dsh（重试）') && cardError10.includes('data-action="reconnect">重连') &&
+        !cardError10.includes('data-action="restart">重试'))
+      check('PU-22-10④ buttonDisableRules：stopped 态 ⟳/▶ 均可点（reconnect/start = false；拆分核心场景，双活）',
+        PM22.buttonDisableRules('stopped').reconnect === false && PM22.buttonDisableRules('stopped').start === false)
+      check('PU-22-10⑤ buttonDisableRules：ready 态 ⟳ 禁用（DR-22-9：幂等 no-op 说谎按钮不如禁用）+ ▶ 禁用',
+        PM22.buttonDisableRules('ready').reconnect === true && PM22.buttonDisableRules('ready').start === true)
+      check('PU-22-10⑥ package.json：contributes.commands 含 dsh.reconnect/dsh.start + activationEvents 含对应 onCommand 两项',
+        (PKG22.contributes.commands || []).some((c) => c.command === 'dsh.reconnect') &&
+        (PKG22.contributes.commands || []).some((c) => c.command === 'dsh.start') &&
+        (PKG22.activationEvents || []).includes('onCommand:dsh.reconnect') &&
+        (PKG22.activationEvents || []).includes('onCommand:dsh.start'))
+      const iRe10 = extSrc22.indexOf("registerCommand('dsh.reconnect'")
+      const iStart10 = extSrc22.indexOf("registerCommand('dsh.start'", iRe10 > 0 ? iRe10 : 0)
+      const iStop10 = extSrc22.indexOf("registerCommand('dsh.stop'", iStart10 > 0 ? iStart10 : 0)
+      const bodyRe10 = iRe10 > -1 && iStart10 > iRe10 ? extSrc22.slice(iRe10, iStart10) : null
+      const bodyStart10 = iStart10 > -1 && iStop10 > iStart10 ? extSrc22.slice(iStart10, iStop10) : null
+      check('PU-22-10⑦ extension.ts：dsh.reconnect 注册体含 attachExisting 落点与无实例诚实提示锚（showInformationMessage）',
+        bodyRe10 !== null && bodyRe10.includes('runtime.attachExisting()') &&
+        bodyRe10.includes('showInformationMessage') && bodyRe10.includes('当前没有运行中的 dsh 实例'))
+      check('PU-22-10⑧ extension.ts：dsh.start 注册体落点 = start()（四步仲裁既有语义原样调用，DR-22-8 零新启动逻辑）',
+        bodyStart10 !== null && bodyStart10.includes('runtime?.start()'))
+      check('PU-22-10⑨ dsh.autoStart 描述含「不自动启动」语义（无条件断言，V3-4；与 PU-22-8⑨ 同面双钉）',
+        ((PKG22.contributes.configuration.properties || {})['dsh.autoStart'] || { description: '' }).description.includes('不自动启动'))
+    }
+
+    // ---- PU-22-11: 重连命令零 spawn（O-22-e 拆分；命令视角回归钉）---------------
+    px('PU-22-11 重连命令零 spawn（runtime 层：attachExisting 无实例 → 返回 false + stopped + attached=false 复位（DR-22-10，与 PU-22-1A 同型钉）+ spawn=0 + 提示锚 + 发现探活器武装；静态锚由 PU-22-4③（方法体零 launchManaged）与 PU-22-10⑦（注册体接线）承载）')
+    {
+      const counter11 = makeSpawnCounter22()
+      seedRec22(null)
+      const r11 = newRuntime22(process.pid, { port: deadPort22, dshProcessFactory: counter11.factory })
+      const off11 = rlogOffset()
+      const ok11 = await r11.attachExisting() // = dsh.reconnect 命令 runtime 落点
+      check('PU-22-11① 返回 false + spawn 计数 = 0（重连只认领不拉起，零 spawn 恒成立）',
+        ok11 === false && counter11.count() === 0)
+      check('PU-22-11② state=stopped + attached === false（失败路径复位，DR-22-10/V3-1——命令视角回归钉）',
+        r11.state === 'stopped' && r11.attached === false)
+      check('PU-22-11③ no running dsh found 提示锚在案 + 发现探活器武装（诚实提示判定面 = extension 层 !ok 分支）',
+        rlogSlice(off11).includes('attachExisting: no running dsh found; entering stopped') && r11.discoveryTimer !== null)
+      r11.dispose()
+      counter11.closeAll()
+    }
+
+    // ---- PU-22-12: 启动命令 adopt-or-spawn（DR-22-8；三场景）---------------------
+    px('PU-22-12 启动命令 adopt-or-spawn（场景 A：外部实例认领零 spawn（「有外部实例就用外部实例」）；场景 B：无实例恰 1 spawn（「没有再启动新dsh实例」）；场景 C：并发收敛（PU-21-1 同型，与 PU-22-5 互证））')
+    {
+      const counter12 = makeSpawnCounter22()
+      // 场景 A：注入外部实例（注册表活记录：真实活 pid + 真实 boot server）
+      const port12a = await freePort22()
+      await mkBoot22(port12a)
+      const pid12a = livePid22()
+      seedRec22(extRec22(pid12a, port12a))
+      const r12a = newRuntime22(livePid22(), { port: port12a, dshProcessFactory: counter12.factory })
+      await r12a.start() // = dsh.start 命令 runtime 落点（start() 四步仲裁）
+      check('PU-22-12A① step1 认领成功：state=ready + spawn 计数 = 0 + pid 与证据一致（DR-22-8 主断言）',
+        r12a.state === 'ready' && counter12.count() === 0 && r12a.dshPid === pid12a)
+      r12a.dispose()
+      // 场景 B：无实例（注册表空 + 空闲端口 + 锁可用）→ step3 拿锁 spawn
+      seedRec22(null)
+      const port12b = await freePort22()
+      const r12b = newRuntime22(process.pid, { port: port12b, dshProcessFactory: counter12.factory })
+      await r12b.start()
+      check('PU-22-12B① 恰 1 次 spawn（工厂 seam 计数）+ ready（step3 锁仲裁；「没有再启动新dsh实例」）',
+        counter12.count() === 1 && r12b.state === 'ready')
+      r12b.dispose()
+      // 场景 C：两实例 attachExisting 失败后 stopped（attached 已复位——DR-22-10，衔接 PU-22-5 前置语义）→ 并发 start()
+      seedRec22(null)
+      const winC12 = livePid22()
+      const r12c1 = newRuntime22(process.pid, { port: await freePort22(), dshProcessFactory: counter12.factory })
+      const r12c2 = newRuntime22(winC12, { port: await freePort22(), dshProcessFactory: counter12.factory })
+      const ok12c1 = await r12c1.attachExisting()
+      const ok12c2 = await r12c2.attachExisting()
+      r12c1.stopDiscoveryProbe(); r12c2.stopDiscoveryProbe() // 并发 start() 前拆真实 timer
+      const beforeC12 = counter12.count()
+      await Promise.all([r12c1.start(), r12c2.start()])
+      check('PU-22-12C① 两实例并发 start() 恰 1 次 spawn 收敛单实例（PU-21-1 同型；前置双双 attachExisting 失败 = DR-22-10 复位后守卫不拦）',
+        ok12c1 === false && ok12c2 === false &&
+        counter12.count() - beforeC12 === 1 && r12c1.state === 'ready' && r12c2.state === 'ready' &&
+        r12c1.dshPid !== null && r12c1.dshPid === r12c2.dshPid)
+      r12c1.dispose(); r12c2.dispose()
+      counter12.closeAll()
+    }
+
+    // ---- PU-22 装置回收 --------------------------------------------------------
+    for (const v of liveVictims22) await killAndReap(v)
+    for (const s of bootServers22) { try { s.closeAllConnections() } catch { /* best-effort */ } try { s.close() } catch { /* best-effort */ } }
+    seedRec22(null)
+  }
+
   // ---- F3 全卷收口（0.1.18）：runtime error 事件仅允许预期条目 --------------
   // 推广原则收口：任何 newRuntime() 实例的意外 emit('error') 都在此显式失败
   //（带 windowPid + 错误上下文），而非静默或 ERR_UNHANDLED_ERROR 整卷崩溃。
