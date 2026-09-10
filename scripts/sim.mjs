@@ -100,6 +100,8 @@
 // negation is replaced by ADR-48's controlled-relaxation semantics). Two
 // hard-coded baselines moved in step (sanctioned): PU-9③d 0.1.17 → 0.1.18 and
 // PP-12-2③ launchInfo key set 17 → 20 (design §3.2 adds fields 18–20).
+// 0.1.20 publish round (QA deploy r1 PD-1): PU-9③d 0.1.18 → 0.1.20 moved in
+// step with the version bump — commit 482b1de missed it, closed in rework r1.
 // 0.1.18 fix round (F1-F5, per docs/0.1.18问题分析 §5.1): F1 mock lifecycle
 // isolation (the multi-window kill path restores the mock right after the
 // block; P0-I-2/3 seeds its OWN live mock on 45680 so no block inherits a dead
@@ -3797,7 +3799,7 @@ async function main() {
     check('PU-9③c dsh.chooseChannel 命令注册 + activationEvents（QuickPick 重入口可达）',
       Array.isArray(pkgSim.contributes.commands) && pkgSim.contributes.commands.some((c) => c.command === 'dsh.chooseChannel') &&
       Array.isArray(pkgSim.activationEvents) && pkgSim.activationEvents.includes('onCommand:dsh.chooseChannel'))
-    check('PU-9③d 版本 0.1.18（发布单点；0.1.18 轮 package.json 随设计 §九 #6 递增，基线对齐）', pkgSim.version === '0.1.18')
+    check('PU-9③d 版本 0.1.20（发布单点；0.1.20 轮 package.json 随 0.1.5-rc.1 适配发布轮递增，基线对齐）', pkgSim.version === '0.1.20')
     check('PU-9④ 回归聚合检查：PU-1..8 + PP-8 全族此前没有失败', failures === 0)
 
     // ==================== 0.1.15 additions (#88/#92, design §8.1/§8.2/§8.1b) ==
