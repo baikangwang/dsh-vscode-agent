@@ -48,7 +48,12 @@ deploy:
   distribution:
     - offline: "code --install-extension <vsix>  # 真装离线安装"
     - asset: media/dsh.svg       # 侧边栏容器图标
-    - ignore: ".vscodeignore 打包排除（node_modules/.npm-cache/src/out/…）"
+    # 打包排除项（据 .vscodeignore 实际内容）：.vscode / src / scripts / node_modules /
+    # .npm-cache / .npm-userconfig / .sim-* / tsconfig.json / 全部 *.ts 与 *.map / docs /
+    # .dsh / .git / .gitignore / .env / *.vsix。
+    # 注意：out/ 必须入包，不得排除——包内 package.json 的 main 指向 ./out/extension.js，
+    # 排除 out/ 会让分发物不含任何可运行代码（0.1.23 部署检查 QA-D23-02 订正）。
+    - ignore: ".vscodeignore 打包排除（.vscode/src/scripts/node_modules/.npm-cache/docs/.dsh 等；out/ 必须入包）"
   registry_data: "%LOCALAPPDATA%\\DshVscode"   # 生命周期仲裁数据与服务发现
 
 # 安全/约束红线 —— 2026-08-25 v2 起不再由引擎守卫读取（agile-dev-host 已删除）。
