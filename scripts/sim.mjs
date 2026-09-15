@@ -978,7 +978,15 @@ async function main() {
       // the browser-auth-isomorphic session COOKIE name/value from the live
       // authority (design §3.7, E-PR-4) — a different semantic from the
       // fabricated _npx cache-dir hash names this scan guards against.
-      if (/sha512|createHash/i.test(text) && f !== 'authProxy.ts') hashCalc.push(f)
+      // 0.1.23 scoped exemption（同型、同理由类别）：channelProbe.ts 的
+      // createHash 复刻 npm 的 npx 缓存目录名算法（sha512 前 16 位，设计 §5.1
+      // 探针 3 / DR-23-3）。这正是 0.1.23 的要求——**哈希必须运行时计算、
+      // 源码零哈希字面量**，因此本扫描禁止的「16 位哈希字面量」（上一行
+      // hashLits，仍然全库扫描、无豁免）与「哈希计算」在本模块上语义正交：
+      // 前者仍被禁止并由 CH-23-1③④ 追加断言，后者是设计明文要求的手段。
+      // 判据来源：docs/0.1.23问题分析-外部接管实例通道显示未知与待重启提示误导.md
+      // §5.1 模块纪律 / DR-23-3 / §7.2 CH-23-1。
+      if (/sha512|createHash/i.test(text) && f !== 'authProxy.ts' && f !== 'channelProbe.ts') hashCalc.push(f)
       // Drive-letter machine paths: string-escaped form ('D:\\apps' = two
       // backslashes in source) and the comment form ('C:\\Users' = one
       // backslash + uppercase segment); regex class escapes (':\\s', ':\\d')
@@ -4265,12 +4273,12 @@ async function main() {
         cardCh11.includes('data-action="set-channel" data-channel="alpha" disabled') &&
         cardCh11.includes('data-action="set-channel" data-channel="latest"') &&
         cardCh11.includes('data-action="set-channel" data-channel="next"'))
-      check('PU-10-2② 待重启高亮：configChannel≠运行中 → 「立即重启以生效」（0.1.21 改动点 4 起 = 专用 apply-channel-restart 动作；语义分离于 restart 的重连，设计 PU-21-12 按新动作改写原 restart 断言）',
+      check('PU-10-2② 待重启高亮：configChannel≠运行中 → 「立即重启以生效」（0.1.21 改动点 4 起 = 专用 apply-channel-restart 动作；语义分离于 restart 的重连，设计 PU-21-12 按新动作改写原 restart 断言）【B2 分支（0.1.23）】',
         cardCh11.includes('<button class="primary" data-action="apply-channel-restart">立即重启以生效</button>') &&
         !cardCh11.includes('data-action="restart">立即重启以生效'))
       const cardSync11 = buildDetailsHtml(makeCardInfo15(), 'ready', { cspSource: CSP11, configChannel: 'alpha' })
-      check('PU-10-2③ 通道一致 → 零待重启高亮面（判定 = config 通道 ≠ 运行中快照通道）',
-        !cardSync11.includes('立即重启以生效'))
+      check('PU-10-2③ 通道一致 → 零待重启高亮面（判定 = 运行通道可知且 config 通道 ≠ 运行中快照通道）【B1 分支（0.1.23）】',
+        !cardSync11.includes('立即重启以生效') && !cardSync11.includes('待重启生效'))
       // PU-12-1（取代 PU-10-3①②，#99 sanctioned 改写）: package.json（无条件断言）
       // —— ADR-38 拆容器后的双容器声明范围断言（0.1.16 #93）。
       const pkg11 = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8'))
@@ -4442,10 +4450,10 @@ async function main() {
         info17.processStartedAt === '2026-09-01T12:30:33.000Z')
       const info17b = LI.buildLaunchInfo({ rec: { pid: mockPid, port: MOCK_PORT, managedBy: 'managed-own', startedAt: '2026-09-02T01:00:00.000Z' } })
       check('PP-12-2② rec 无字段 → null（旧 registry 容忍面）', info17b.processStartedAt === null)
-      check('PP-12-2③ 既有 17 字段键没有回归 + 新增第 18–20 键（键集恰 20；0.1.18 ADR-48 external 三字段，managed 快照恒 null）',
+      check('PP-12-2③ 既有 17 字段键没有回归 + 新增第 18–21 键（键集恰 21；0.1.18 ADR-48 external 三字段 + 0.1.23 第 21 字段 channelSource，managed 快照恒 null）【0.1.23 修订：20 → 21，channelSource 并入 null 断言组】',
         ['dshVersion', 'resolverVersion', 'versionCrossCheck', 'binDir', 'dshBin', 'channel', 'resolverMode', 'lastCheckAt', 'launchMode', 'port', 'pid', 'managedBy', 'startedAt', 'logFiles', 'externalCommandLine', 'externalUrl', 'processStartedAt'].every((k) => k in info17) &&
-        ['externalDshVersion', 'externalDshVersionNote', 'externalCmdlineVersion'].every((k) => k in info17 && info17[k] === null) &&
-        Object.keys(info17).length === 20)
+        ['externalDshVersion', 'externalDshVersionNote', 'externalCmdlineVersion', 'channelSource'].every((k) => k in info17 && info17[k] === null) &&
+        Object.keys(info17).length === 21)
 
       // ---- PP-12-3: queryProcessStartTimeSync 注入面（G3，PI-3 同型）---------
       const isoOK = '2026-09-01T12:30:33.123Z'
@@ -5285,9 +5293,11 @@ async function main() {
       check('PU-21-12④ pending 产物按钮 = data-action="apply-channel-restart" + 待生效提示文案（PU-10-2② 新基线的渲染端复核）',
         cardPend21.includes('<button class="primary" data-action="apply-channel-restart">立即重启以生效</button>') &&
         cardPend21.includes('（已选「latest」，待重启生效）'))
-      check('PU-21-12⑤ 快照 channel=null 闭环渲染：「当前」行显示「未知」+ 待生效恒真（按钮仍渲染）+ 三通道按钮无 disabled（CR-8 / R-7）',
+      check('PU-21-12⑤ 快照 channel=null 闭环渲染：「当前」行显示「未知」+ 如实文案「运行通道无法核实」+ 按钮**不渲染** + 三通道按钮无 disabled（CR-8 / R-7）【0.1.23 修订（用户裁决 O-23-4）：原断言「按钮仍渲染 + 待生效恒真」按 B3 新基线反向改写】',
         cardUnk21.includes('<b>未知</b>') &&
-        cardUnk21.includes('data-action="apply-channel-restart"') &&
+        cardUnk21.includes('运行通道无法核实') &&
+        !cardUnk21.includes('data-action="apply-channel-restart"') &&
+        !cardUnk21.includes('待重启生效') &&
         !cardUnk21.includes('data-action="set-channel" data-channel="alpha" disabled'))
     }
 
@@ -5800,6 +5810,404 @@ async function main() {
     for (const v of liveVictims22) await killAndReap(v)
     for (const s of bootServers22) { try { s.closeAllConnections() } catch { /* best-effort */ } try { s.close() } catch { /* best-effort */ } }
     seedRec22(null)
+  }
+
+  // ==================== 0.1.23 additions (design §7.2, CH-23-1..7) ============
+  // 外部接管实例「当前通道」显示未知 与「待重启提示误导」修复族的无头回归。
+  // 判据来源（用例唯一依据）：docs/0.1.23问题分析-外部接管实例通道显示未知与待重启提示误导.md
+  // v3 §7.2 用例表（§5.1 纯模块规格 / §5.2.1 判定序列 / §5.2.2 注册表三分支 /
+  // §5.3 渲染三态 / §7.3 既有断言修订）。关键裁决前提（用户裁决，本块断言据此写死）：
+  //  - O-23-1：运行通道不可知时不渲染「立即重启以生效」按钮；
+  //  - O-23-2：来源标注常驻显示在「当前」行；
+  //  - O-23-3：恢复失败时显式提示「运行通道无法核实」；
+  //  - O-23-4：PU-21-12⑤ 反向改写（已在上方 0.1.21 块内落地）。
+  // 手法：
+  //  - CH-23-1..5 = 纯函数直测（channelProbe / launchInfo / webviewHtml 编译产物）；
+  //  - CH-23-6/7 = runtime 驱动，复用 sim.mjs 既有「模块导出属性打补丁」装置
+  //    （PU-22-2B 先例：替换 out/instance.js 的 processCommandLine / resolvePortPid
+  //    属性，finally 恢复）——断言不依赖真实 netstat/CIM，受限沙箱内可直接跑。
+  px('CH-23 外部接管通道恢复与三态渲染（0.1.23：npx 目录名算法 + 命令行反查 + 快照来源标注 + 注册表三分支 + 方案 A 显式传参复用）')
+  {
+    const CP23 = require('../out/channelProbe.js') // { extractNpxDirName, npxCacheDirName, buildChannelSpecIndex, recoverChannelFromCmdline, CHANNEL_SOURCE_NOTE_*, buildChannelUnknownNote, channelSourceNote }
+    const Inst23 = require('../out/instance.js') // processCommandLine / resolvePortPid 打补丁载体（模块单例）
+    const crypto23 = require('node:crypto')
+    const DSH_PKG23 = '@deepseek-ai/dsh'
+    const CHANNELS23 = ['latest', 'next', 'alpha']
+
+    // ---- CH-23-1: 目录名算法复刻 + 零哈希字面量静态断言 ------------------------
+    px('CH-23-1 npx 缓存目录名算法复刻（与 npm libnpmexec 同型：sha512 前 16 位十六进制）')
+    {
+      // 测试内**独立实现**（不复用被测函数）：直接调 node:crypto 复刻 npm 算法。
+      const independent = (spec) => crypto23.createHash('sha512').update(spec).digest('hex').slice(0, 16)
+      const pairs = CHANNELS23.map((c) => ({ c, spec: `${DSH_PKG23}@${c}` }))
+      check('CH-23-1① 三通道目录名与独立实现的 sha512 前 16 位逐一一致（36 进制小写、长度 16）',
+        pairs.every(({ c, spec }) => {
+          const got = CP23.npxCacheDirName(spec)
+          return got === independent(spec) && /^[0-9a-f]{16}$/.test(got)
+        }))
+      const dirs = pairs.map(({ spec }) => CP23.npxCacheDirName(spec))
+      check('CH-23-1② 三通道目录名互不相同（无误配风险：任一目录名至多映到一条通道）',
+        new Set(dirs).size === 3)
+      // 静态断言（设计 §7.2 CH-23-1）：源码与测试块都不得出现写死的 16 位目录名常量
+      // ——DR-23-3 去硬编码纪律：新增通道时反查表自动跟随，不需改哈希字面量。
+      const probeSrc23 = fs.readFileSync(path.join(process.cwd(), 'src', 'channelProbe.ts'), 'utf8')
+      const simSrc23 = fs.readFileSync(path.join(process.cwd(), 'scripts', 'sim.mjs'), 'utf8')
+      check('CH-23-1③ 静态：src/channelProbe.ts 不含任何 16 位十六进制目录名字面量（哈希一律运行时计算，DR-23-3）',
+        !/['"][0-9a-f]{16}['"]/.test(probeSrc23))
+      check('CH-23-1④ 静态：sim.mjs 的 CH-23 块不含 16 位目录名字面量（测试同样不得写死哈希，只与独立实现比对）',
+        !/['"][0-9a-f]{16}['"]/.test(simSrc23.slice(simSrc23.indexOf('CH-23-1 npx'), simSrc23.indexOf('CH-23-2'))))
+      check('CH-23-1⑤ 静态：channelProbe.ts 零 fs 依赖（不读缓存目录文件）+ 零 vscode import（纯 Node 层）',
+        !/from 'node:fs'/.test(probeSrc23) && !/require\('node:fs'\)/.test(probeSrc23) &&
+        !/from 'vscode'/.test(probeSrc23) && !/require\('vscode'\)/.test(probeSrc23))
+    }
+
+    // ---- CH-23-2: 命令行 → 目录名提取 ----------------------------------------
+    px('CH-23-2 命令行 → npx 缓存目录名提取（本机实测形态 / 正斜杠 / 非 npx / 非法十六进制 / 300 截断）')
+    {
+      const dirNext = CP23.npxCacheDirName(`${DSH_PKG23}@next`)
+      // 本机实测形态（设计 §四探针 2）：反斜杠 + \node_modules\.bin\..\ 相对段。
+      const realForm = `"node"   "C:\\Users\\u\\AppData\\Local\\npm-cache\\_npx\\${dirNext}\\node_modules\\.bin\\..\\@deepseek-ai\\dsh\\lib\\bin.js" web`
+      check('CH-23-2① 本机实测反斜杠形态 → 正确提取目录名',
+        CP23.extractNpxDirName(realForm) === dirNext)
+      const slashForm = `node /home/u/.npm/_npx/${dirNext}/node_modules/@deepseek-ai/dsh/lib/bin.js web`
+      check('CH-23-2② 正斜杠形态同样命中（分隔符两侧两种写法都接受）',
+        CP23.extractNpxDirName(slashForm) === dirNext)
+      check('CH-23-2③ 非 npx 形态（自定义路径启动）→ null（诚实降级，不猜）',
+        CP23.extractNpxDirName('node D:\\apps\\custom\\bin.js web') === null &&
+        CP23.extractNpxDirName('npx @deepseek-ai/dsh web') === null)
+      check('CH-23-2④ 目录名 16 位但含非十六进制字符 / 宽度不足 → null（正则宽度与字符集双约束）',
+        CP23.extractNpxDirName('C:\\x\\_npx\\zzzzzzzzzzzzzzzz\\node_modules\\a') === null &&
+        CP23.extractNpxDirName('C:\\x\\_npx\\abc123\\node_modules\\a') === null)
+      check('CH-23-2⑤ null / 空串 / 非字符串 → null（never-throw 契约）',
+        CP23.extractNpxDirName(null) === null && CP23.extractNpxDirName('') === null &&
+        CP23.extractNpxDirName(undefined) === null)
+      // 探针 7 形态：前缀拉长到超过 300 字符后截断，目录名仍完整落在窗口内
+      // （截断只让 token 缺席，不造假值）。
+      const padded = `node "${'x'.repeat(250)}\\_npx\\${dirNext}\\node_modules\\.bin\\..\\@deepseek-ai\\dsh\\lib\\bin.js" web`
+      const truncated = padded.slice(0, 300)
+      check('CH-23-2⑥ 300 字符截断值（探针 7 形态，目录名完整落在窗口内）→ 仍可提取',
+        padded.length > 300 && truncated.length === 300 && CP23.extractNpxDirName(truncated) === dirNext)
+    }
+
+    // ---- CH-23-3: 通道恢复真值表 ---------------------------------------------
+    px('CH-23-3 通道恢复真值表（三通道命中 / 版本号 spec / 本地目录 / 裸包名 / 非 npx / 空 / null → 诚实降级）')
+    {
+      const index = CP23.buildChannelSpecIndex(DSH_PKG23, CHANNELS23)
+      check('CH-23-3① 反查表规模恰 3（只收录三条 dist-tag 规范形，不收录裸包名——DR-23-9 绝不猜）',
+        index.size === 3)
+      const hits = CHANNELS23.map((c) => {
+        const dir = CP23.npxCacheDirName(`${DSH_PKG23}@${c}`)
+        const fact = CP23.recoverChannelFromCmdline(`node C:\\_npx\\${dir}\\node_modules\\x.js web`, index)
+        return fact.channel === c && fact.source === 'cmdline' && fact.npxDirName === dir
+      })
+      check('CH-23-3② 三条 dist-tag 规范形 → 通道值正确且 source === \'cmdline\'（npxDirName 一并回带）',
+        hits.every(Boolean))
+      // 未命中族：全部必须 channel === null && source === null（诚实降级，绝不回退配置值）。
+      const missSpecs = [
+        `${DSH_PKG23}@0.1.5-rc.2`,       // 版本号 spec
+        `C:\\some\\local\\dsh`,            // 本地目录 spec
+        DSH_PKG23,                        // 裸包名 spec（QA-D23-06：目录真机可达，显式判未命中）
+        `${DSH_PKG23}@^0.1.5-rc.2`,       // 范围 spec
+      ]
+      const missDirs = missSpecs.map((s) => CP23.npxCacheDirName(s))
+      check('CH-23-3③ 版本号 / 本地目录 / 裸包名 / 范围 spec 四条目录名均不在反查表（index.get === undefined）',
+        missDirs.every((d) => index.get(d) === undefined))
+      const missInputs = [
+        ...missDirs.map((d) => `node C:\\_npx\\${d}\\node_modules\\x.js web`),
+        'node D:\\apps\\custom\\bin.js web',   // 非 npx 形态
+        'npx @deepseek-ai/dsh web',           // 裸 spec 的 npx 简写（无 _npx 目录）
+        '',                                   // 空命令行
+        null,                                 // null 命令行（CIM 不可得）
+      ]
+      check('CH-23-3④ 上述全部入参 → channel === null && source === null（诚实降级断言，绝不回退配置值）',
+        missInputs.every((s) => {
+          const f = CP23.recoverChannelFromCmdline(s, index)
+          return f.channel === null && f.source === null
+        }))
+      // 配对不变式：channel === null ⟺ source === null（全组合成立）。
+      const allFacts = [
+        ...CHANNELS23.map((c) => CP23.recoverChannelFromCmdline(`C:\\_npx\\${CP23.npxCacheDirName(`${DSH_PKG23}@${c}`)}\\node_modules\\x.js`, index)),
+        ...missInputs.map((s) => CP23.recoverChannelFromCmdline(s, index)),
+      ]
+      check('CH-23-3⑤ 配对不变式全组合成立：channel === null ⟺ source === null',
+        allFacts.every((f) => (f.channel === null) === (f.source === null)))
+    }
+
+    // ---- CH-23-4: 快照与渲染三态 ---------------------------------------------
+    px('CH-23-4 快照与渲染三态（B1 一致 / B2 不一致 / B3 不可知 + 配对不变式防御 + 键数 21）')
+    {
+      const CSP23 = 'https://*.vscode-cdn.net vscode-webview-resource:'
+      const noteCmd = CP23.CHANNEL_SOURCE_NOTE_CMDLINE
+      // ① B1：运行通道可知且与配置一致
+      const cardB1 = buildDetailsHtml(
+        LI.buildLaunchInfo({ channel: 'next', channelSource: 'cmdline', managedBy: 'managed-own', port: 3080 }),
+        'ready', { cspSource: CSP23, configChannel: 'next' })
+      check('CH-23-4① B1（running=next + source=cmdline + cfg=next）→ 含「当前」/next/据启动命令行，不含待重启生效与重启按钮',
+        cardB1.includes('当前') && cardB1.includes('<b>next</b>') &&
+        cardB1.includes(noteCmd) &&
+        !cardB1.includes('待重启生效') && !cardB1.includes('data-action="apply-channel-restart"'))
+      // ② B2：运行通道可知且与配置不一致（0.1.21 要保的形态：提示不得被抹掉）
+      const cardB2 = buildDetailsHtml(
+        LI.buildLaunchInfo({ channel: 'next', channelSource: 'cmdline', managedBy: 'managed-own', port: 3080 }),
+        'ready', { cspSource: CSP23, configChannel: 'latest' })
+      check('CH-23-4② B2（同输入 + cfg=latest）→ 含「（已选「latest」，待重启生效）」与 apply-channel-restart 按钮（R-2 回归钉）',
+        cardB2.includes('（已选「latest」，待重启生效）') &&
+        cardB2.includes('data-action="apply-channel-restart"'))
+      // ③ B3：运行通道不可知（用户当前报的现象面）
+      const cardB3 = buildDetailsHtml(
+        LI.buildLaunchInfo({ channel: null, managedBy: 'external', port: 3080, pid: 555 }),
+        'ready', { cspSource: CSP23, configChannel: 'latest' })
+      check('CH-23-4③ B3（channel=null + cfg=latest）→ 含 <b>未知</b> 与「运行通道无法核实」，**不含**待重启生效、**不含**重启按钮（O-23-1/O-23-3）',
+        cardB3.includes('<b>未知</b>') && cardB3.includes('运行通道无法核实') &&
+        !cardB3.includes('待重启生效') && !cardB3.includes('data-action="apply-channel-restart"'))
+      // ④ 配对不变式防御：channel=null 而 channelSource 非空 → 输出必须置 null
+      const infoDef = LI.buildLaunchInfo({ channel: null, channelSource: 'cmdline', managedBy: 'external' })
+      check('CH-23-4④ 配对不变式防御：输入 channel=null + channelSource=\'cmdline\' → 输出 channelSource === null（绝不流出无值的来源标注）',
+        infoDef.channel === null && infoDef.channelSource === null)
+      // ⑤ 键数：新增第 21 字段后总数为 21（与 §7.3 PP-12-2③ 修订口径一致）
+      const infoKeys = LI.buildLaunchInfo({ channel: 'next', channelSource: 'cmdline', managedBy: 'managed-own' })
+      check('CH-23-4⑤ 键集含 channelSource 且总数 = 21（0.1.23 第 21 个可选字段，PP-12-2③ 同口径）',
+        'channelSource' in infoKeys && Object.keys(infoKeys).length === 21 &&
+        infoKeys.channelSource === 'cmdline')
+    }
+
+    // ---- CH-23-5: 来源标注渲染 + 转义安全 -------------------------------------
+    px('CH-23-5 来源标注渲染（三条来源各显其标注 / 无来源不编造 / 转义安全沿用 PU-4 手法）')
+    {
+      const CSP23b = 'https://*.vscode-cdn.net vscode-webview-resource:'
+      const renderWith = (src) => buildDetailsHtml(
+        LI.buildLaunchInfo({ channel: 'next', channelSource: src, managedBy: 'managed-own', port: 3080 }),
+        'ready', { cspSource: CSP23b, configChannel: 'next' })
+      const cCmd = renderWith('cmdline')
+      const cReg = renderWith('registry')
+      const cOpt = renderWith('launch-option')
+      check('CH-23-5① channelSource=\'cmdline\' → 含 CHANNEL_SOURCE_NOTE_CMDLINE 常量值',
+        cCmd.includes(CP23.CHANNEL_SOURCE_NOTE_CMDLINE))
+      check('CH-23-5② channelSource=\'registry\' → 含 CHANNEL_SOURCE_NOTE_REGISTRY 常量值',
+        cReg.includes(CP23.CHANNEL_SOURCE_NOTE_REGISTRY))
+      check('CH-23-5③ channelSource=\'launch-option\' → 含 CHANNEL_SOURCE_NOTE_LAUNCH_OPTION 常量值',
+        cOpt.includes(CP23.CHANNEL_SOURCE_NOTE_LAUNCH_OPTION))
+      check('CH-23-5④ 三条标注互不相同（语义分离：三种证据强度在界面上可区分）',
+        new Set([CP23.CHANNEL_SOURCE_NOTE_CMDLINE, CP23.CHANNEL_SOURCE_NOTE_REGISTRY, CP23.CHANNEL_SOURCE_NOTE_LAUNCH_OPTION]).size === 3)
+      // 防御输入：channel 有值而 channelSource 缺失 → 不含任一标注（不编造来源）。
+      const cNoSrc = buildDetailsHtml(
+        LI.buildLaunchInfo({ channel: 'next', managedBy: 'managed-own', port: 3080 }),
+        'ready', { cspSource: CSP23b, configChannel: 'next' })
+      check('CH-23-5⑤ channel 有值而 channelSource 缺失（防御输入）→ 不含三条标注中的任何一条（不编造来源）',
+        ![CP23.CHANNEL_SOURCE_NOTE_CMDLINE, CP23.CHANNEL_SOURCE_NOTE_REGISTRY, CP23.CHANNEL_SOURCE_NOTE_LAUNCH_OPTION].some((n) => cNoSrc.includes(n)))
+      // 转义安全（PU-4 手法）：通道值含脚本形态 → 输出无裸注入。
+      const nasty = '<script>alert(1)</script>'
+      const cEsc = buildDetailsHtml(
+        LI.buildLaunchInfo({ channel: nasty, channelSource: 'cmdline', managedBy: 'managed-own', port: 3080 }),
+        'ready', { cspSource: CSP23b, configChannel: 'next' })
+      check('CH-23-5⑥ 转义安全：通道值含 <script> 形态时输出无裸注入（escapeAttr 转义不变）',
+        !cEsc.includes('<script>alert(1)</script>') && cEsc.includes('&lt;script&gt;'))
+      // 单点常量出口：channelSourceNote 是渲染层唯一取值入口。
+      check('CH-23-5⑦ channelSourceNote 单点函数：三种来源各返对应常量、null 返空串（渲染层禁止就地书写字面）',
+        CP23.channelSourceNote('cmdline') === CP23.CHANNEL_SOURCE_NOTE_CMDLINE &&
+        CP23.channelSourceNote('registry') === CP23.CHANNEL_SOURCE_NOTE_REGISTRY &&
+        CP23.channelSourceNote('launch-option') === CP23.CHANNEL_SOURCE_NOTE_LAUNCH_OPTION &&
+        CP23.channelSourceNote(null) === '')
+      check('CH-23-5⑧ buildChannelUnknownNote 如实文案（含配置值插值，不做「已生效」暗示）',
+        CP23.buildChannelUnknownNote('latest') === '（运行通道无法核实，配置为「latest」）')
+    }
+
+    // ---- CH-23-6: 注册表写入规则三分支（runtime 驱动 + 打补丁装置）------------
+    px('CH-23-6 注册表 channel 写入规则三分支（新 pid 成功写 / 新 pid 失败不写 / 同 pid 有值保留 / 同 pid 缺值恢复成功补写）')
+    {
+      const dirNext23 = CP23.npxCacheDirName(`${DSH_PKG23}@next`)
+      const dirAlpha23 = CP23.npxCacheDirName(`${DSH_PKG23}@alpha`)
+      const clNext = `"node" "C:\\Users\\u\\AppData\\Local\\npm-cache\\_npx\\${dirNext23}\\node_modules\\.bin\\..\\@deepseek-ai\\dsh\\lib\\bin.js" web`
+      const clAlpha = `"node" "C:\\Users\\u\\AppData\\Local\\npm-cache\\_npx\\${dirAlpha23}\\node_modules\\.bin\\..\\@deepseek-ai\\dsh\\lib\\bin.js" web`
+      const origPCL23 = Inst23.processCommandLine
+      try {
+        // ① 新 pid + 恢复成功 → 记录 channel = 恢复值
+        seedInst({ dsh: null, windows: [] })
+        Inst23.processCommandLine = () => clNext
+        const r6a = newRuntime(process.pid, { port: 3081, processStartQuery: () => null })
+        await r6a.adopt(3081, 6001, 'external', 'ok')
+        await r6a.writeRegistry()
+        check('CH-23-6① 新 pid + 恢复成功 → 记录 channel = 恢复值（next），且快照 channelSource = \'cmdline\'',
+          readInstance().dsh !== null && readInstance().dsh.channel === 'next' &&
+          r6a.getLaunchInfo() !== null && r6a.getLaunchInfo().channelSource === 'cmdline')
+        r6a.dispose()
+        // ② 新 pid + 恢复失败（补丁喂 null）→ 字段缺省（不写，维持诚实缺省）
+        seedInst({ dsh: null, windows: [] })
+        Inst23.processCommandLine = () => null
+        const r6b = newRuntime(process.pid, { port: 3082, processStartQuery: () => null })
+        await r6b.adopt(3082, 6002, 'external', 'ok')
+        await r6b.writeRegistry()
+        const rec6b = readInstance().dsh
+        check('CH-23-6② 新 pid + 恢复失败 → 记录不含 channel 字段（诚实缺省）+ 快照 channel/channelSource 双 null',
+          rec6b !== null && !('channel' in rec6b) &&
+          r6b.getLaunchInfo().channel === null && r6b.getLaunchInfo().channelSource === null)
+        r6b.dispose()
+        // ③ 同 pid 重新认领、旧记录**有** channel → 保留原值（补丁喂不同值也不覆盖）
+        seedInst({ dsh: { pid: 6003, port: 3083, managedBy: 'external', startedAt: '2026-09-10T10:00:00.000Z', channel: 'alpha' }, windows: [] })
+        Inst23.processCommandLine = () => clNext // 恢复会得出 next，但不得覆盖既有 alpha
+        const r6c = newRuntime(process.pid, { port: 3083, processStartQuery: () => null })
+        await r6c.adopt(3083, 6003, 'external', 'ok', readInstance().dsh)
+        await r6c.writeRegistry()
+        check('CH-23-6③ 同 pid 认领 + 旧记录有 channel（alpha）→ 保留原值（补丁喂 next 也不覆盖）+ 来源 = \'registry\'（keep-reuse）',
+          readInstance().dsh !== null && readInstance().dsh.channel === 'alpha' &&
+          r6c.getLaunchInfo().channelSource === 'registry')
+        r6c.dispose()
+        // ④ 同 pid 重新认领、旧记录**无** channel、本次恢复成功 → 写入恢复值
+        //    （分支 ③，打破「不写 → 读不到 → 显示未知 → 仍然不写」闭环的关键断言）
+        seedInst({ dsh: { pid: 6004, port: 3084, managedBy: 'external', startedAt: '2026-09-10T10:00:00.000Z' }, windows: [] })
+        Inst23.processCommandLine = () => clAlpha
+        const r6d = newRuntime(process.pid, { port: 3084, processStartQuery: () => null })
+        await r6d.adopt(3084, 6004, 'external', 'ok', readInstance().dsh)
+        await r6d.writeRegistry()
+        check('CH-23-6④ 同 pid 认领 + 旧记录**缺** channel + 本次恢复成功 → 写入恢复值（alpha）——打破闭环的那一步',
+          readInstance().dsh !== null && readInstance().dsh.channel === 'alpha')
+        r6d.dispose()
+      } finally {
+        Inst23.processCommandLine = origPCL23
+      }
+      seedInst({ dsh: null, windows: [] })
+    }
+
+    // ---- CH-23-7: 方案 A 显式传参复用（v3 新增，QA-D23-r2-01）------------------
+    px('CH-23-7 方案 A 显式传参复用（discovery-port 传参零查询 / step2 字段复用零查询 / 两者皆空补 1 次 / knownCommandLine 优先 / 5 参旧调用向后兼容）')
+    {
+      const dirNext7 = CP23.npxCacheDirName(`${DSH_PKG23}@next`)
+      const dirAlpha7 = CP23.npxCacheDirName(`${DSH_PKG23}@alpha`)
+      const clNext7 = `"node" "C:\\Users\\u\\AppData\\Local\\npm-cache\\_npx\\${dirNext7}\\node_modules\\.bin\\..\\@deepseek-ai\\dsh\\lib\\bin.js" web`
+      const clAlpha7 = `"node" "C:\\Users\\u\\AppData\\Local\\npm-cache\\_npx\\${dirAlpha7}\\node_modules\\.bin\\..\\@deepseek-ai\\dsh\\lib\\bin.js" web`
+      const origPCL7 = Inst23.processCommandLine
+      const origRPP7 = Inst23.resolvePortPid
+      // processCommandLine 调用计数桩（判「2b 是否被触发」的唯一依据）。
+      let pclCalls7 = 0
+      try {
+        // ① discovery-port 路径：经 discoveryAdopt 第 6 参喂受控完整 cmdline
+        //    → source='cmdline' 且桩计数 = 0（2b 未触发，未发生重复查询）。
+        pclCalls7 = 0
+        Inst23.processCommandLine = () => { pclCalls7++; return null } // 上游 discoveryTick 的调用也会计数，故用 delta 口径
+        seedInst({ dsh: null, windows: [] })
+        const r7a = newRuntime(process.pid, { port: 3091, processStartQuery: () => null })
+        await r7a.attachExisting() // 无实例 → stopped
+        r7a.stopDiscoveryProbe()
+        const callsBefore7a = pclCalls7
+        await r7a.discoveryAdopt(3091, 6001, 'external', 'ok', null, clNext7)
+        check('CH-23-7① discovery-port 经第 6 参显式传参 → source === \'cmdline\'、channel === next、且 processCommandLine 桩计数增量 = 0（2b 未被触发，方案 A 生效）',
+          r7a.getLaunchInfo() !== null &&
+          r7a.getLaunchInfo().channelSource === 'cmdline' && r7a.getLaunchInfo().channel === 'next' &&
+          pclCalls7 - callsBefore7a === 0)
+        r7a.dispose()
+        seedInst({ dsh: null, windows: [] })
+        // ② step2 字段复用路径：仅设 this.externalCommandLine（300 截断值）、第 6 参不传
+        //    → 同样命中 source='cmdline' 且桩计数 = 0。
+        pclCalls7 = 0
+        Inst23.processCommandLine = () => { pclCalls7++; return null }
+        const r7b = newRuntime(process.pid, { port: 3092, processStartQuery: () => null })
+        r7b.stopProbe()
+        r7b.externalCommandLine = clAlpha7.slice(0, 300)
+        await r7b.adopt(3092, 6002, 'external', 'ok')
+        check('CH-23-7② step2 字段复用（第 6 参不传 + this.externalCommandLine 有值）→ source === \'cmdline\'、channel === alpha、桩计数 = 0（零新增查询）',
+          r7b.getLaunchInfo().channelSource === 'cmdline' && r7b.getLaunchInfo().channel === 'alpha' &&
+          pclCalls7 === 0)
+        r7b.dispose()
+        seedInst({ dsh: null, windows: [] })
+        // ③ 两者皆空 → 落 2b 补一次查询（桩计数 = 1），恢复结果与喂入值一致。
+        pclCalls7 = 0
+        Inst23.processCommandLine = () => { pclCalls7++; return clNext7 }
+        const r7c = newRuntime(process.pid, { port: 3093, processStartQuery: () => null })
+        r7c.stopProbe()
+        await r7c.adopt(3093, 6003, 'external', 'ok')
+        check('CH-23-7③ 第 6 参与字段皆空 → 落 2b 补一次 processCommandLine（桩计数 = 1），恢复结果 = 喂入值 next',
+          pclCalls7 === 1 && r7c.getLaunchInfo().channel === 'next' && r7c.getLaunchInfo().channelSource === 'cmdline')
+        r7c.dispose()
+        seedInst({ dsh: null, windows: [] })
+        // ④ 优先级：第 6 参传 A(next)、字段设 B(alpha) → 断言取的是 A
+        //    （knownCommandLine 优先，2a-(i) 先于 2a-(ii)）。
+        pclCalls7 = 0
+        Inst23.processCommandLine = () => { pclCalls7++; return clAlpha7 }
+        const r7d = newRuntime(process.pid, { port: 3094, processStartQuery: () => null })
+        r7d.stopProbe()
+        r7d.externalCommandLine = clAlpha7.slice(0, 300) // B
+        await r7d.adopt(3094, 6004, 'external', 'ok', null, clNext7) // A
+        check('CH-23-7④ 优先级：第 6 参（next）优先于实例字段（alpha）→ 取 next；桩计数 = 0（两路复用都不查进程）',
+          r7d.getLaunchInfo().channel === 'next' && pclCalls7 === 0)
+        r7d.dispose()
+        seedInst({ dsh: null, windows: [] })
+        // ⑤ 向后兼容：以 5 参旧调用形态（不传第 6 参）直接调 adopt → 不抛错，
+        //    行为与显式传 null 一致（设计 §四探针 8 的运行时侧佐证）。
+        pclCalls7 = 0
+        Inst23.processCommandLine = () => { pclCalls7++; return clNext7 }
+        const r7e = newRuntime(process.pid, { port: 3095, processStartQuery: () => null })
+        r7e.stopProbe()
+        let threw7e = false
+        try {
+          await r7e.adopt(3095, 6005, 'external', 'ok') // 5 参旧形态
+        } catch { threw7e = true }
+        const snap7e = r7e.getLaunchInfo()
+        r7e.dispose()
+        seedInst({ dsh: null, windows: [] })
+        pclCalls7 = 0
+        const r7f = newRuntime(process.pid, { port: 3096, processStartQuery: () => null })
+        r7f.stopProbe()
+        let threw7f = false
+        try {
+          await r7f.adopt(3096, 6006, 'external', 'ok', null, null) // 显式传 null
+        } catch { threw7f = true }
+        const snap7f = r7f.getLaunchInfo()
+        r7f.dispose()
+        check('CH-23-7⑤ 向后兼容：5 参旧调用不抛错，且 channel/channelSource 与显式传 null 完全一致（探针 8 运行时侧佐证）',
+          threw7e === false && threw7f === false &&
+          snap7e !== null && snap7f !== null &&
+          snap7e.channel === snap7f.channel && snap7e.channelSource === snap7f.channelSource)
+
+        // ⑥ 端到端判别：真跑 discoveryTick（实际走 runtime.ts 的 L1326 调用点），
+        //    喂入一条**目录名落在下标 300 之外**的超长命令行。判别力来自：
+        //      - 正确实现（传本 tick 的完整局部值 tickCmdline）→ 恢复成功 next；
+        //      - 若误写成传 this.externalCommandLine（300 截断值）→ 目录名被截掉
+        //        → 恢复失败、channel 为 null。
+        //    即本断言直接钉住「必须是完整未截断局部变量」这条实现要求（派单要点 2）。
+        //    （真实环境命令行仅 130 字符、目录名位于 60–75，截断不会丢；本用例是
+        //    机制判别器，用于证明传的确实是完整值而不是截断值。）
+        pclCalls7 = 0
+        const httpMod23 = require('node:http')
+        const bootSrv23 = httpMod23.createServer((req, res) => {
+          res.writeHead(200, { 'Content-Type': 'text/html' })
+          res.end('<html>window.__DSH_BOOT__ = {}</html>')
+        })
+        const port7g = await findBindablePort()
+        // 目录名必须完整落在下标 300 之外（填充 300 个 x → 目录名起始下标 347，
+        // 连正则要求的尾随分隔符也一并越界，确保截断值确实提取不到）。
+        const longCmdline = `node "C:\\Users\\u\\AppData\\Local\\npm-cache\\${'x'.repeat(300)}\\_npx\\${dirNext7}\\node_modules\\.bin\\..\\@deepseek-ai\\dsh\\lib\\bin.js" web`
+        const holderPid7g = spawnVictim().pid
+        try {
+          seedInst({ dsh: null, windows: [] })
+          Inst23.resolvePortPid = () => ({ pid: holderPid7g, address: '127.0.0.1' })
+          Inst23.processCommandLine = () => { pclCalls7++; return longCmdline }
+          const r7g = newRuntime(process.pid, { port: port7g, processStartQuery: () => null })
+          await r7g.attachExisting() // 端口无监听（尚未起 boot server）→ 失败落 stopped
+          r7g.stopDiscoveryProbe()
+          // boot server 在附着失败之后才起（PU-22-2B 同型：外部实例此刻才出现）
+          await new Promise((r) => bootSrv23.listen(port7g, '127.0.0.1', r))
+          check('CH-23-7⑥ 前置：附着失败落 stopped（端口当时无监听）',
+            r7g.state === 'stopped')
+          const callsBefore7g = pclCalls7
+          await r7g.discoveryTick() // 端口命中 → discoveryAdopt → adopt（L1326 调用点）
+          const snap7g = r7g.getLaunchInfo()
+          check('CH-23-7⑥ 端到端 discoveryTick（真实 L1326 调用点）：目录名落在下标 300 之外仍恢复出 next + source = \'cmdline\'，本 tick 仅 1 次命令行查询，且实例字段已被 beginAttachment() 清空（证明恢复只能靠显式传参）',
+            longCmdline.length > 300 && longCmdline.indexOf(dirNext7) > 300 &&
+            CP23.extractNpxDirName(longCmdline.slice(0, 300)) === null &&
+            snap7g !== null && snap7g.channel === 'next' && snap7g.channelSource === 'cmdline' &&
+            r7g.externalCommandLine === null &&
+            pclCalls7 - callsBefore7g === 1)
+          r7g.dispose()
+        } finally {
+          try { bootSrv23.closeAllConnections() } catch { /* best-effort */ }
+          bootSrv23.close()
+        }
+      } finally {
+        Inst23.processCommandLine = origPCL7
+        Inst23.resolvePortPid = origRPP7
+      }
+      seedInst({ dsh: null, windows: [] })
+    }
   }
 
   // ---- F3 全卷收口（0.1.18）：runtime error 事件仅允许预期条目 --------------
