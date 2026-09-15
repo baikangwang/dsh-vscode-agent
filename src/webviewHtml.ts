@@ -32,6 +32,7 @@ import { EXTERNAL_VERSION_MISMATCH_WARNING, EXTERNAL_VERSION_NOTE_CMDLINE, forma
 import type { RuntimeState } from './runtime'
 import { buttonDisableRules } from './panelMessages'
 import { channelPickItems } from './channelSelect'
+import { buildChannelUnknownNote, channelSourceNote, type ChannelSource } from './channelProbe'
 
 /** Every RuntimeState, for the baked per-state disable matrix (single source). */
 const PANEL_STATES: readonly RuntimeState[] = ['idle', 'awaitingChannel', 'starting', 'ready', 'error', 'stopped']
@@ -486,7 +487,7 @@ function readyBody(info: DshLaunchInfo | null, opts?: DetailsRenderOptions): str
   ${kvRow('pid', info.pid !== null ? String(info.pid) : '—')}
   ${kvRow('managedBy', managedByText(info.managedBy))}
   ${kvRow('启动时间', formatLocalTimestamp(info.processStartedAt) ?? '未知')}
-  ${channelSwitcherHtml(info.channel, opts)}
+  ${channelSwitcherHtml(info.channel, opts, info.channelSource)}
   ${kvRow('启动方式', '外部启动/未知')}
   ${kvRow('最近检查', info.lastCheckAt ?? '未知')}
   ${cmd !== null ? `<div class="sect">接管命令行</div>\n  <div class="mono small">${escapeAttr(cmd)}</div>` : ''}
@@ -533,7 +534,7 @@ function readyBody(info: DshLaunchInfo | null, opts?: DetailsRenderOptions): str
   <div class="sect">版本</div>
   ${verBlock}
   ${kvRow('插件版本', extVersionText(opts?.extVersion))}
-  ${channelSwitcherHtml(info.channel, opts)}
+  ${channelSwitcherHtml(info.channel, opts, info.channelSource)}
   ${kvRow('启动方式', launchModeText(info, opts))}
   ${binBlock}
   <div class="sect">运行</div>
@@ -568,30 +569,49 @@ function stoppedRows(info: DshLaunchInfo): string {
  * 以新通道重拉 / 外部不代杀只给指引；never auto-restarts; channelSelected=true
  * is written by the host, so the first-launch pick card never fires again).
  *
- * 0.1.21（改动点 5，CR-8）: `current` = 快照 channel 真值（string | null）。
- * null = external 接管 / 旧记录缺省 / 注册表真值不可知 → 「当前」行如实显示
- * 「未知」（绝不回显配置值）；待生效判定（cfg !== current）在 current=null 时
- * 恒真——「已选 X，待重启生效」提示与「立即重启以生效」按钮保持渲染，外部
- * 进程仍跑旧通道的事实如实呈现；三个通道按钮均无 disabled 项（无当前项可比）。
+ * 0.1.21（改动点 5，CR-8）: `current` = 快照 channel 真值（string | null），
+ * 绝不回显配置值。
+ *
+ * 0.1.23 三态改造（设计 §5.3 / DR-23-5；用户裁决 O-23-1/O-23-2/O-23-3/O-23-4）：
+ * 运行通道可知与否分出三条分支，来源标注常驻显示在「当前」行（O-23-2）：
+ *  - B1 运行通道可知且与配置一致 → 「当前 {值}（{来源标注}）」，无括号提示、
+ *    无重启按钮；
+ *  - B2 运行通道可知且与配置不一致 → 追加「（已选「{cfg}」，待重启生效）」并
+ *    渲染按钮（文案不变；此时提示是有依据的，正是 0.1.21 要保的形态）；
+ *  - B3 运行通道不可知（running === null）→ 「当前 未知」+ 如实文案
+ *    buildChannelUnknownNote(cfg)，**不渲染按钮**（O-23-1：在我们无法知道当前
+ *    跑什么的情况下，让用户点一个承诺「重启后生效」的按钮，本身就是不可兑现的
+ *    承诺）。判据据此从 `cfg !== current` 改为 `running !== null && cfg !== null
+ *    && cfg !== running`——恒真只是实现细节的副产物，改后不再做无法验证的断言。
+ *
+ * 来源标注随 channelSource 取值（O-23-2 / R-9），字面单点定义在 channelProbe，
+ * 渲染层 import 引用、禁止就地书写；channelSource 为 null 时不标注（不编造来源）。
  */
-function channelSwitcherHtml(current: string | null, opts?: DetailsRenderOptions): string {
+function channelSwitcherHtml(current: string | null, opts?: DetailsRenderOptions, channelSource?: ChannelSource): string {
   const cfg = typeof opts?.configChannel === 'string' && opts.configChannel.length > 0 ? opts.configChannel : null
-  const pending = cfg !== null && cfg !== current
-  const currentText = current ?? '未知'
+  const running = current
+  const pending = running !== null && cfg !== null && cfg !== running
+  const currentText = running ?? '未知'
   const buttons = channelPickItems()
     .map(
       (it) =>
         `<button data-action="set-channel" data-channel="${escapeAttr(it.label)}"${it.label === current ? ' disabled' : ''}>${escapeAttr(it.label)}</button>`,
     )
     .join('\n    ')
+  // 来源标注：仅当运行通道有值时渲染（配对不变式，launchInfo 已做同向防御）。
+  const note = running !== null ? channelSourceNote(channelSource ?? null) : ''
+  const sourceNote = note.length > 0 ? ` <span class="muted">（${escapeAttr(note)}）</span>` : ''
   const pendingNote = pending ? ` <span class="muted">（已选「${escapeAttr(cfg!)}」，待重启生效）</span>` : ''
+  // B3：运行通道不可知 → 如实文案取代「待生效」断言，且不渲染重启按钮（O-23-1）。
+  const unknownNote =
+    running === null && cfg !== null ? ` <span class="muted">${escapeAttr(buildChannelUnknownNote(cfg))}</span>` : ''
   const pendingAction = pending
     ? `
   <div class="actions"><button class="primary" data-action="apply-channel-restart">立即重启以生效</button></div>`
     : ''
   return `
   <div class="sect">通道</div>
-  <div class="row"><span class="k">当前</span><span class="v"><b>${escapeAttr(currentText)}</b>${pendingNote}</span></div>
+  <div class="row"><span class="k">当前</span><span class="v"><b>${escapeAttr(currentText)}</b>${sourceNote}${pendingNote}${unknownNote}</span></div>
   <div class="actions">
     ${buttons}
   </div>${pendingAction}`

@@ -33,10 +33,14 @@ import {
   type DshRecord, type IdentityVerdict,
 } from './instance'
 import { DshProcess, START_LAUNCHER_LABEL, judgeContractByVersion, probeDetail, resolveBannerFromLog, treeKill, type ContractTier, type ProbeKind, type SpawnOptions, type SpawnedInfo } from './dshProcess'
-import { readRuntimeMeta, resolveDshBin, scanNpxCacheReadonly } from './dshResolver'
+import { readRuntimeMeta, resolveDshBin, scanNpxCacheReadonly, DSH_PKG } from './dshResolver'
 import { buildExternalVersionNote, buildLaunchInfo, extractVersionFromCommandLine, parseSelfVersion, type DshLaunchInfo } from './launchInfo'
 import { appendDecisionLog, LOOPBACK_HOST } from './paths'
-import { resolveChannelRestartAction } from './channelSelect'
+import { DSH_CHANNELS, resolveChannelRestartAction } from './channelSelect'
+import {
+  buildChannelSpecIndex, recoverChannelFromCmdline,
+  type ChannelFact, type ChannelSource,
+} from './channelProbe'
 import { mintSessionCookie, readCredentialsSecret, startAuthProxy, type AuthProxyHandle } from './authProxy'
 
 export type ManagedBy = 'extension' | 'external' | 'managed-own'
@@ -252,6 +256,18 @@ export class DshRuntime extends EventEmitter {
    * attachedLaunchMode 同点（记录生命周期终点 + per-attach 重置）。
    */
   private attachedChannel: string | null = null
+  /**
+   * 0.1.23（设计 §5.2.1 第 2c 步 / §5.9；QA-D23-01）：attachedChannel 的**来源
+   * 标注**——「这个通道值是怎么得来的」与值成对携带（语义分离纪律：UI 层不得把
+   * 间接事实说成直接事实）。
+   * 赋值落点与 attachedChannel 同点：launchManaged 成功 = 'launch-option'
+   * （拉起时配置值即实际启动通道）；adopt 认领 = 记录含 channel 时 'registry'，
+   * 否则 external 恢复成功时 'cmdline'、恢复失败时 null（诚实降级）。
+   * 清理点与 attachedChannel 同点（记录生命周期终点 + per-attach 重置）。
+   * 快照透传见 refreshLaunchInfo；配对不变式（channel === null ⟺ source === null）
+   * 由 launchInfo.buildLaunchInfo 单向防御兜底。
+   */
+  private attachedChannelSource: ChannelSource = null
   /** ADR-22: resolver hit transparency from the most recent managed launch. */
   private lastResolved: SpawnedInfo['resolved'] = null
   /** ADR-22: managed log of the most recent managed launch (self-version source). */
@@ -367,12 +383,16 @@ export class DshRuntime extends EventEmitter {
         pid: this.dshPid,
         managedBy: this.managedBy,
         // 0.1.21 改动点 5（CR-8）: 快照 channel 的真值来源 = attachedChannel
-        // （运行实例的真实启动通道），不再配置直通回显。null = external 接管 /
-        // 旧记录缺省 / 尚未附着 → 详情卡渲染「未知」、待生效判定恒真（诚实
-        // 呈现外部进程仍跑旧通道的事实，绝不回退配置值——见字段注释）。
+        // （运行实例的真实启动通道），不再配置直通回显。null = 外部接管实例的
+        // 通道确实无法核实（0.1.23 起：external 恢复失败 / 旧记录缺省 / 尚未附着）
+        // → 详情卡渲染「未知」，**0.1.23 起不再作待生效断言**（渲染侧三态分支
+        // 见 webviewHtml.channelSwitcherHtml）。绝不回退配置值——见字段注释。
         // readRuntimeMeta 仍按配置通道取通道级 meta（lastCheckAt 是配置侧事实，
         // 两种语义分离）。
         channel: this.attachedChannel,
+        // 0.1.23（设计 §六 改动点 9 / §5.9）：来源标注随值成对入快照，
+        // 与 channel 走同一条数据路径（不存在两个源失同步的可能）。
+        channelSource: this.attachedChannelSource,
         externalCommandLine: this.externalCommandLine,
         // 0.1.14 第 16 个可选字段：token 契约档（T 路径）的带 token 直达 URL；
         // legacy/降级快照恒 null（null = 旧契约，不会破坏既有 15 字段消费者）。
@@ -459,6 +479,8 @@ export class DshRuntime extends EventEmitter {
     // managed landing re-assigns both before any ready emit.
     this.attachedLaunchMode = null
     this.attachedChannel = null
+    // 0.1.23（设计 §5.2.2 末段）：来源标注与 attachedChannel 同步重置，防跨附着泄漏。
+    this.attachedChannelSource = null
     // 0.1.14 ADR-30 per-attach reset: the previous attachment's proxy/session
     // facts must never leak (a fresh managed launch re-judges the contract).
     this.contract = 'unknown'
@@ -687,6 +709,10 @@ export class DshRuntime extends EventEmitter {
         // snapshot / registry channel truth source).
         this.attachedLaunchMode = mode
         this.attachedChannel = this.options.channel
+        // 0.1.23（设计 §5.2.1 第 4 步 / §六 改动点 6）：来源标注 = 'launch-option'
+        // ——受管拉起时 options.channel 就是本次实例实际启动所用的通道，属直接
+        // 事实（「据启动配置」）。
+        this.attachedChannelSource = 'launch-option'
         this.lastResolved = info.resolved
         this.lastLaunchLogFile = info.logFile
         this.port = info.port
@@ -961,8 +987,21 @@ export class DshRuntime extends EventEmitter {
    *  - attachedChannel = rec.channel ?? null（不回退配置值，CR-8）。
    *    记录的 pid 与被认领 pid 不一致（stale 记录描述的不是本进程）时不采信
    *    记录字段，同归 null（快照只陈述运行实例的事实）。
+   *
+   * 0.1.23（设计 §5.2.1，QA-D23-r2-01 方案 A）：`attachedChannel` 不再对
+   * external 恒为 null——恢复成功即填真值、来源标注成对写 `attachedChannelSource`。
+   * 新增**可选**第 6 参 `knownCommandLine`：调用方本 tick / 本步已取到的运行
+   * 进程命令行原文（未截断）。仅 discovery-port 路径（经 discoveryAdopt 透传）
+   * 传值；其余 4 个调用点（step1 / step2 残余迁移 / step2 / step4）不传、行为
+   * 不变（向后兼容由设计 §四探针 8 的调用点枚举 + CH-23-7⑤ 运行时断言双重支撑）。
+   * 之所以走显式传参而不是复用实例字段：discoveryAdopt 首句 beginAttachment()
+   * 会在 adopt 之前把 this.externalCommandLine 置 null，字段复用在该路径上永假。
    */
-  private async adopt(port: number, pid: number | null, managedBy: ManagedBy, probeKind: ProbeKind | null, rec?: DshRecord | null): Promise<void> {
+  private async adopt(
+    port: number, pid: number | null, managedBy: ManagedBy, probeKind: ProbeKind | null,
+    rec?: DshRecord | null,
+    knownCommandLine?: string | null,
+  ): Promise<void> {
     this.port = port
     this.managedBy = managedBy
     this.dshPid = pid
@@ -971,6 +1010,22 @@ export class DshRuntime extends EventEmitter {
     const adoptedRec = rec !== undefined && rec !== null && pid !== null && rec.pid === pid ? rec : null
     this.attachedLaunchMode = adoptedRec?.launchMode ?? null
     this.attachedChannel = adoptedRec?.channel ?? null
+    // 0.1.23（设计 §5.2.1 第 1 / 2 / 3 步 / §六 改动点 7）：通道恢复判定序列。
+    //  - 第 1 步（跳过判据，QA-D23-11）：old record 已带 channel（记录即缓存）
+    //    → 直接用记录值，source = 'registry'，零新增查询——同 pid 重复认领、
+    //    跨窗口重连全部走此分支；
+    //  - 第 2 步（仅 external 且第 1 步未命中）：按 2a-(i) knownCommandLine 优先 →
+    //    2a-(ii) this.externalCommandLine → 2b 补一次 processCommandLine 的顺序
+    //    取命令行，再经纯函数 recoverChannelFromCmdline 反查；成功 → source =
+    //    'cmdline'，失败 → 双双 null（诚实降级，rlog 留痕）；
+    //  - 第 3 步（managed-own / extension 记录含 channel）：由第 1 步覆盖。
+    if (adoptedRec?.channel !== undefined) {
+      this.attachedChannel = adoptedRec.channel
+      this.attachedChannelSource = 'registry'
+    } else {
+      this.attachedChannelSource = null
+      if (managedBy === 'external') this.recoverChannelFromKnownCmdline(pid, knownCommandLine)
+    }
     // 0.1.18 ADR-48 (§3.3): external 接管路径在快照装配前完成只读版本扫描 +
     // 命令行版本提取。step1 re-adopt 场景 externalCommandLine 为 null（start()
     // 开头 per-attach 重置且注册表不落盘）→ 命令行版本恒 null，目录版本仍可得
@@ -1026,6 +1081,65 @@ export class DshRuntime extends EventEmitter {
     this.url = `http://${LOOPBACK_HOST}:${port}`
     this.setState('ready')
     rlog(`adopt: direct legacy surface settled at ${this.url} (probe=${probeKind ?? 'null'})`)
+  }
+
+  /**
+   * 0.1.23（设计 §5.2.1 第 2 步 / §5.8 成本模型）：external 认领路径的通道恢复。
+   *
+   * 复用优先顺序（决定新增查询次数的唯一地方）：
+   *  2a-(i)  `knownCommandLine` 非空（discovery-port 经 discoveryAdopt 显式传参）
+   *          → 直接喂 recoverChannelFromCmdline，零新增查询；
+   *  2a-(ii) 否则 `this.externalCommandLine` 非空（step2 在 adopt 前写入的 300
+   *          截断值，adopt 时未被清空）→ 同样零新增查询。截断安全性见设计 §四
+   *          探针 7：截断只会让 token 缺席（提不出 → 诚实降级），不会造出假值；
+   *  2b     两者皆空且 pid 非 null → 补一次 processCommandLine(pid, 15_000)
+   *          （与 step2 的既有调用同函数同预算）。这条路径只在「记录缺 channel
+   *          且调用方未传命令行且本窗口无字段」时发生——step1 / step4 /
+   *          discovery-registry 三条，且因成功后会写回注册表，频率上限是
+   *          「每个外部 dsh 进程生命周期一次」。
+   *
+   * 恢复结果赋值（2c）：成功 → attachedChannel = 恢复值 + source = 'cmdline'；
+   * 失败 → 双双保持 null（诚实降级），并写 rlog 留痕（含命令行片段与提取到的
+   * 目录名），使上游 npm 算法漂移可被观测而不是静默失效（设计 §5.7 R-7）。
+   * 本方法不抛错——processCommandLine 自身 never-throw（失败/超时/非 win32 → null）。
+   */
+  private recoverChannelFromKnownCmdline(pid: number | null, knownCommandLine?: string | null): void {
+    const index = buildChannelSpecIndex(DSH_PKG, DSH_CHANNELS)
+    const known = typeof knownCommandLine === 'string' && knownCommandLine.length > 0 ? knownCommandLine : null
+    const field = typeof this.externalCommandLine === 'string' && this.externalCommandLine.length > 0
+      ? this.externalCommandLine
+      : null
+    const reusedFrom = known !== null
+      ? 'knownCommandLine (discovery-port 显式传参)'
+      : field !== null
+        ? 'externalCommandLine (step2 字段复用，300 截断值)'
+        : null
+    let cmdline: string | null
+    if (known !== null) {
+      cmdline = known
+    } else if (field !== null) {
+      cmdline = field
+    } else if (pid !== null) {
+      cmdline = processCommandLine(pid, 15_000)
+      rlog(`adopt channel recovery: no known command line on hand; queried processCommandLine(${pid}, 15000)=${cmdline ? cmdline.slice(0, 300) : 'null (CIM failed/empty)'}`)
+    } else {
+      cmdline = null
+    }
+    const fact: ChannelFact = recoverChannelFromCmdline(cmdline, index)
+    if (fact.channel !== null && fact.source !== null) {
+      this.attachedChannel = fact.channel
+      this.attachedChannelSource = fact.source
+      rlog(`adopt channel recovery: recovered channel '${fact.channel}' from npx cache dir ${fact.npxDirName ?? '<none>'} (evidence=${reusedFrom ?? 'processCommandLine'})`)
+      return
+    }
+    // 诚实降级：值与其来源一并保持 null（配对不变式），并留痕说明为何没恢复出来。
+    this.attachedChannel = null
+    this.attachedChannelSource = null
+    rlog(
+      `adopt channel recovery: no channel fact (honest degradation; config value is NOT used as a fallback) — ` +
+        `cmdline=${cmdline === null ? 'null (unavailable)' : `'${cmdline.slice(0, 200)}'`} ` +
+        `npxDirName=${fact.npxDirName ?? 'null (not an npx cache form or truncated away)'} evidence=${reusedFrom ?? 'processCommandLine'}`,
+    )
   }
 
   /**
@@ -1146,16 +1260,25 @@ export class DshRuntime extends EventEmitter {
       // on re-adopt; absent (JSON-dropped undefined) for external/old records
       // (= direct semantics, backward compatible).
       launchMode: keepDshStartedAt && prev !== null ? prev.launchMode : (this.lastLaunchMode ?? undefined),
-      // 0.1.21 改动点 5（设计 §3.4 D-2 改动点 5 / §7.1）: 可选 channel 字段，
-      // launchMode / processStartedAt 同型的 keep-reuse 先例——
-      //  - managed 拉起（新 pid）：写 attachedChannel = 拉起时配置值（实际启动
-      //    通道，启动侧记忆为唯一写入源）；
-      //  - 同 pid 重新认领（keepDshStartedAt）：保留记录原值（注册表真值不因
-      //    认领窗口而漂移）；
-      //  - external 认领（attachedChannel 为 null）→ undefined 被 JSON 丢弃
-      //    （插件无法核实外部进程真实通道，诚实缺省）；
-      //  - 旧记录缺省（读侧）：null → 快照「未知」+ 待生效恒真（写侧零回归）。
-      channel: keepDshStartedAt && prev !== null ? prev.channel : (this.attachedChannel ?? undefined),
+      // 0.1.21 改动点 5（设计 §3.4 D-2 改动点 5 / §7.1），0.1.23 重写（设计 §5.2.2，
+      // QA-D23-10）：可选 channel 字段，launchMode / processStartedAt 同型的
+      // keep-reuse 先例，但 keep 条件多一个「旧记录确实带 channel」。三分支：
+      //  ① 新 pid（keepDshStartedAt 假）→ 取 attachedChannel：managed 拉起写
+      //     options.channel；external 恢复失败写 undefined（被 JSON 丢弃，维持
+      //     0.1.21 的诚实缺省边界）。
+      //  ② 同 pid 重新认领且旧记录**有** channel → 保留记录原值（注册表真值不因
+      //     认领窗口漂移；一次恢复失败不得擦掉已记录的真值）。
+      //  ③ 同 pid 重新认领且旧记录**无** channel → 取本次的 attachedChannel：
+      //     本次恢复成功即写入。**这正是打破「不写 → 读不到 → 显示未知 → 仍然不写」
+      //     这个自我延续闭环的那一步**（0.1.21 的旧表达式在此分支恒取
+      //     prev.channel = undefined → 永远补不上通道）。
+      // 0.1.23 修订（原注释理由已失效）：旧写法保留「external 认领不写」的理由是
+      // 「插件无法核实外部进程真实通道」，该前提已被本机实测证伪（运行进程命令行
+      // 里的 npx 缓存目录名可精确反查出启动 spec，见 channelProbe）；现在的规则是
+      // 「核实成功则写、核实失败仍不写」。
+      channel: keepDshStartedAt && prev !== null && prev.channel !== undefined
+        ? prev.channel
+        : (this.attachedChannel ?? undefined),
       // 0.1.16 #97 (ADR-40): see the block above — keep-reuse / fresh
       // query-once / failure omits the field (undefined is JSON-dropped).
       processStartedAt,
@@ -1302,11 +1425,18 @@ export class DshRuntime extends EventEmitter {
           const holder = resolvePortPid(probePort)
           rlog(`discovery: port candidate probe(port=${probePort})=${probeKind} holder=${JSON.stringify(holder)}`)
           let pid: number | null = null
+          // 0.1.23（设计 §5.2.1 方案 A）：本 tick 取到的**完整未截断**命令行在此
+          // 暂存，认领时经 discoveryAdopt 第 6 参显式传给 adopt 做通道恢复复用。
+          // 取**未截断**的完整局部值而不是 this.externalCommandLine（那是 300 截断
+          // 值）——beginAttachment() 会在 adopt 之前清掉该实例字段，用字段等于回到
+          // v2 的失效形态。
+          let tickCmdline: string | null = null
           if (holder) {
             const cmdline = processCommandLine(holder.pid, 15_000)
             if (cmdline !== null) {
               // ADR-22: keep the fragment (≤300 chars) for the external degraded card.
               this.externalCommandLine = cmdline.slice(0, 300)
+              tickCmdline = cmdline
               pid = looksLikeDsh(cmdline) ? holder.pid : null
             } else {
               // CIM unavailable: the page probe already verified the __DSH_BOOT__
@@ -1323,7 +1453,7 @@ export class DshRuntime extends EventEmitter {
             rlog('discovery: skip re-adopting the manually detached instance (same pid); reconnect manually')
             return
           }
-          await this.discoveryAdopt(probePort, pid, 'external', probeKind, rec)
+          await this.discoveryAdopt(probePort, pid, 'external', probeKind, rec, tickCmdline)
           return
         }
       }
@@ -1342,11 +1472,23 @@ export class DshRuntime extends EventEmitter {
    * attached 复位，DR-22-10 落点 #6；发现探活器已随离开 stopped 拆除、不再自动
    * 重试——恢复由用户手动 ▶/⟳ 接管）。零 spawn 红线：本方法结构性不含
    * launchManaged 调用（PU-22-4 静态断言）。
+   *
+   * 0.1.23（设计 §5.2.1 / §六 改动点 5，QA-D23-r2-01 方案 A）：新增**可选**第 6 参
+   * `knownCommandLine` 并透传给 adopt。理由：本方法首句 beginAttachment() 会把
+   * this.externalCommandLine 置 null（在 adopt 之前），discovery-port 路径若靠
+   * 实例字段复用命令行则永假、必然对同一 pid 重复查询一次（最坏 15 s 同步阻塞）。
+   * 改为调用方局部值显式传参后，复用与重置顺序彻底解耦，顺带消除「跨 tick 读到
+   * 陈旧命令行」的隐患。discovery-registry 调用点（L1291）上游本无命令行，不传，
+   * 维持该路径新增 1 次查询。
    */
-  private async discoveryAdopt(port: number, pid: number | null, managedBy: ManagedBy, probeKind: ProbeKind, rec: DshRecord | null): Promise<void> {
+  private async discoveryAdopt(
+    port: number, pid: number | null, managedBy: ManagedBy, probeKind: ProbeKind,
+    rec: DshRecord | null,
+    knownCommandLine?: string | null,
+  ): Promise<void> {
     this.beginAttachment()
     this.setState('starting')
-    await this.adopt(port, pid, managedBy, probeKind, rec)
+    await this.adopt(port, pid, managedBy, probeKind, rec, knownCommandLine)
     await this.writeRegistry()
     this.startProbe()
   }
@@ -1456,6 +1598,8 @@ export class DshRuntime extends EventEmitter {
         // 0.1.21 改动点 3（H-5）: 记录生命周期终点 → 附着记忆置 null。
         this.attachedLaunchMode = null
         this.attachedChannel = null
+        // 0.1.23：来源标注与值同步清理（同上）。
+        this.attachedChannelSource = null
         // 0.1.22 DR-22-10/V3-1（落点 #2）：进入 stopped 前 attached 复位（清理链
         // 完整性修复，与 step4 失败先例同型；ADR-21 判定与行为零变化）。
         this.attached = false
@@ -1483,6 +1627,8 @@ export class DshRuntime extends EventEmitter {
         // 0.1.21 改动点 3（H-5）: 记录生命周期终点 → 附着记忆置 null。
         this.attachedLaunchMode = null
         this.attachedChannel = null
+        // 0.1.23：来源标注与值同步清理（同上）。
+        this.attachedChannelSource = null
         // 0.1.22 DR-22-10/V3-1（落点 #3）：进入 stopped 前 attached 复位（死亡后
         // ▶ 启动 / ⟳ 重连恢复入口真实可达的前提，与 step4 失败先例同型）。
         this.attached = false
@@ -1510,6 +1656,8 @@ export class DshRuntime extends EventEmitter {
       // 0.1.21 改动点 3（H-5）: 记录生命周期终点 → 附着记忆置 null。
       this.attachedLaunchMode = null
       this.attachedChannel = null
+      // 0.1.23：来源标注与值同步清理（同上）。
+      this.attachedChannelSource = null
       // 0.1.22 DR-22-10/V3-1（落点 #4）：进入 stopped 前 attached 复位（与
       // step4 失败先例同型）。
       this.attached = false
@@ -1541,6 +1689,8 @@ export class DshRuntime extends EventEmitter {
     // （下次 start() 的认领/拉起落点会重新赋值；per-attach 重置亦兜底）。
     this.attachedLaunchMode = null
     this.attachedChannel = null
+    // 0.1.23：来源标注与值同步清理（同上）。
+    this.attachedChannelSource = null
     this.setState('stopped')
   }
 
@@ -1600,6 +1750,8 @@ export class DshRuntime extends EventEmitter {
     // 后由 launchManaged 落点重新赋值（新实例的实际 mode / 实际通道）。
     this.attachedLaunchMode = null
     this.attachedChannel = null
+    // 0.1.23：来源标注与值同步清理（同上）。
+    this.attachedChannelSource = null
     this.setState('starting')
     // ADR-13 (0.1.7): explicit update = FORCED freshness check + in-place
     // refresh of the npx-cached install (best-effort; runs AFTER the old process
@@ -1701,6 +1853,8 @@ export class DshRuntime extends EventEmitter {
     // 附着记忆置 null（唯一有效记账轮执行一次即可）。
     this.attachedLaunchMode = null
     this.attachedChannel = null
+    // 0.1.23：来源标注与值同步清理（同上）。
+    this.attachedChannelSource = null
     const inst = readInstance()
     const afterUnregister = unregisterWindow(inst, this.options.windowPid)
     // T2 (ADR-15/18): full stale-window scrub BEFORE the last-window verdict —

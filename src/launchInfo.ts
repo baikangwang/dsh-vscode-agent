@@ -24,6 +24,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { logFile, runtimeLogFile } from './paths'
+import type { ChannelSource } from './channelProbe'
 
 /** Version-token regex for the self-report line (named constant; anchored). */
 const SELF_VERSION_RE = /^v?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)$/
@@ -86,9 +87,15 @@ export interface DshLaunchInfo {
    * 版本通道。0.1.21 语义修订（设计 §3.4 D-2 改动点 5 / §7.1，CR-8）：从「配置
    * 直通回显」改为「运行实例的真实启动通道」（string | null）——快照只陈述运行
    * 实例的事实：managed 拉起 = 拉起时配置值；adopt = 注册表记录值；external
-   * 接管 / 旧记录缺省 / 尚未附着 = null（渲染「未知」，待生效判定恒真——
-   * 绝不回退配置值，否则「用户改配置后重连 adopt 旧通道实例」场景会把待生效
-   * 提示抹掉，正是失效形态）。
+   * 接管 / 旧记录缺省 / 尚未附着 = null（渲染「未知」；**0.1.23 起不再回退配置
+   * 值**，否则「用户改配置后重连 adopt 旧通道实例」场景会把待生效提示抹掉，
+   * 正是失效形态）。
+   *
+   * 0.1.23 补全（设计 §5.2.1）：external 接管不再恒为 null——运行进程的命令行
+   * 经「npx 缓存目录名 → 启动 spec」反查可精确恢复真实通道（channelProbe），
+   * 恢复成功即填真值；只有恢复失败（版本号 spec / 本地目录 / 裸包名 / 非 npx
+   * 形态 / 命令行不可得）才回落 null。null 的语义由此收敛为「确实无法核实」，
+   * 不再是 external 的常态。配套的来源标注见下方 channelSource 字段。
    */
   channel: string | null
   /** Resolver mode for this session; unresolved → null. */
@@ -140,6 +147,18 @@ export interface DshLaunchInfo {
    * 恒 null（目录版本仍可得）；非 external → null。
    */
   externalCmdlineVersion?: string | null
+  /**
+   * 0.1.23 第 21 个可选字段（#16 externalUrl / #17 processStartedAt / #18-20
+   * external 三字段同型 additive 先例，既有 20 字段消费者不受破坏）：
+   * 快照 channel 字段的来源标注——「这个通道值是从哪儿来的」与值成对传递
+   * （语义分离纪律；来源走同一条数据路径，不存在两个源失同步的可能）。
+   *
+   * 配对不变式：channel === null ⟺ channelSource === null。两个方向都要成立——
+   * 有来源必说明渠道；渠道不明必无来源。buildLaunchInfo 对本字段做防御：
+   * 输入 channel === null 而 channelSource 非空时，强制置 null（CH-23-4④ 钉住）。
+   * 取值域见 channelProbe.ChannelSource；渲染层经 channelProbe 的单点常量取文案。
+   */
+  channelSource?: ChannelSource
 }
 
 /** Minimal resolver-hit shape (= dshResolver.DshBinInfo, duplicated structurally
@@ -178,6 +197,12 @@ export interface LaunchInfoInput {
   managedBy?: 'extension' | 'external' | 'managed-own' | null
   /** 0.1.21: 运行实例的真实启动通道（真值；未知/未附着 = null，不回退配置）。 */
   channel?: string | null
+  /**
+   * 0.1.23: 该运行通道值的来源标注（runtime 的 attachedChannelSource 透传）。
+   * 与 channel 成对传递；channel 为 null 时本值被 buildLaunchInfo 强制置 null
+   * （配对不变式防御，见 DshLaunchInfo.channelSource 注释）。
+   */
+  channelSource?: ChannelSource
   /** External takeover command line (truncated to 300 here, defensively). */
   externalCommandLine?: string | null
   /** 0.1.14: token-contract (T path) external URL; degraded snapshots force null. */
@@ -318,6 +343,11 @@ export function buildLaunchInfo(input: LaunchInfoInput): DshLaunchInfo {
     { label: 'runtime.log', path: runtimeLogFile() },
     { label: 'dsh.log', path: logFile() },
   ]
+  // 0.1.23 配对不变式防御（设计 §5.3）：值有来源必说明渠道、渠道不明必无来源。
+  // 输入 channel === null 而 channelSource 非空（调用方失同步）→ 强制置 null，
+  // 绝不让「无值的来源标注」流到渲染层（那里会据来源写字，等于编造证据）。
+  const channel = input.channel ?? null
+  const channelSource: ChannelSource = channel === null ? null : (input.channelSource ?? null)
   return {
     dshVersion,
     resolverVersion,
@@ -325,9 +355,10 @@ export function buildLaunchInfo(input: LaunchInfoInput): DshLaunchInfo {
     binDir: resolved?.dir ?? null,
     dshBin: resolved?.binJs ?? null,
     // 0.1.21（改动点 5 / CR-8）: channel = 调用方传入的运行实例真值
-    // （this.attachedChannel），未知 = null（渲染「未知」+ 待生效恒真）；
-    // 不再 `?? ''` 配置直通回显（absent 输入同归 null，诚实缺省）。
-    channel: input.channel ?? null,
+    // （this.attachedChannel），未知 = null；不再 `?? ''` 配置直通回显
+    // （absent 输入同归 null，诚实缺省）。0.1.23：真值的来源随值成对入快照
+    // （channelSource，见上方配对不变式防御）。
+    channel,
     resolverMode: resolved?.mode ?? null,
     lastCheckAt: typeof input.meta?.lastCheckAt === 'string' ? input.meta.lastCheckAt : null,
     launchMode,
@@ -347,6 +378,8 @@ export function buildLaunchInfo(input: LaunchInfoInput): DshLaunchInfo {
     externalDshVersion,
     externalDshVersionNote,
     externalCmdlineVersion,
+    // 0.1.23 第 21 个可选字段：通道值的来源标注（与 channel 配对，见上方防御）。
+    channelSource,
   }
 }
 

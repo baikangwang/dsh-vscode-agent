@@ -49,11 +49,20 @@ export interface DshRecord {
   /**
    * 0.1.21（设计 §3.4 D-2 改动点 5 / §7.1）：运行中 dsh 实际启动所用的通道。
    * OPTIONAL for backward compatibility（launchMode / processStartedAt 先例，
-   * 同型）：0.1.21 之前写入的记录缺省本字段 → 读侧按未知（null）处理——快照
-   * 渲染「未知」、待生效判定恒真（插件无法确知未标注进程的真实通道，诚实
-   * 缺省）。写入方 runtime.writeRegistry 只认启动侧记忆：managed 拉起写入
-   * 实际启动通道；同 pid 重新认领保留原值（keepDshStartedAt 同型守卫）；
-   * external 认领不写（插件无法核实外部进程真实通道，诚实缺省）。
+   * 同型）：早期版本写入的记录缺省本字段 → 读侧按未知（null）处理——快照渲染
+   * 「未知」，渲染层的括号提示改为如实说明「运行通道无法核实」（0.1.23 起不再
+   * 作「待生效」断言——见 webviewHtml.channelSwitcherHtml 三态分支）。
+   *
+   * 写入方 runtime.writeRegistry 的三分支规则（0.1.23 修订，设计 §5.2.2）：
+   *  - 新 pid：写启动侧记忆（managed 拉起 = 拉起时配置通道；external 认领 =
+   *    本次从运行进程命令行恢复出的通道，恢复失败则不写）；
+   *  - 同 pid 重新认领且旧记录带 channel：保留原值（注册表真值不因认领窗口漂移）；
+   *  - 同 pid 重新认领且旧记录缺 channel：写本次恢复值（成功才写）。
+   *
+   * 0.1.23 修订说明：本文档旧版本此处写「external 认领不写（插件无法核实外部
+   * 进程真实通道，诚实缺省）」。该理由已被本机实测证伪——外部进程的真实启动通道
+   * 可以从命令行里的 npx 缓存目录名精确反查出来（见 src/channelProbe.ts），
+   * 因此规则改为「核实成功则写、核实失败仍不写」。
    */
   channel?: string
 }
