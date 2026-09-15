@@ -6016,13 +6016,18 @@ async function main() {
     }
 
     // ---- CH-23-6: 注册表写入规则三分支（runtime 驱动 + 打补丁装置）------------
-    px('CH-23-6 注册表 channel 写入规则三分支（新 pid 成功写 / 新 pid 失败不写 / 同 pid 有值保留 / 同 pid 缺值恢复成功补写）')
+    // 0.1.23 收口（测试专家验收建议 T23-02）：③ 另挂 processCommandLine 调用计数桩，
+    //   把「旧记录已带 channel → 跳过判据命中 → 零新增命令行查询」这条成本承诺
+    //   直接断言出来（此前只断言「值保留 + source='registry'」，未钉住调用次数）。
+    px('CH-23-6 注册表 channel 写入规则三分支（新 pid 成功写 / 新 pid 失败不写 / 同 pid 有值保留 / 同 pid 缺值恢复成功补写）＋跳过判据零查询成本')
     {
       const dirNext23 = CP23.npxCacheDirName(`${DSH_PKG23}@next`)
       const dirAlpha23 = CP23.npxCacheDirName(`${DSH_PKG23}@alpha`)
       const clNext = `"node" "C:\\Users\\u\\AppData\\Local\\npm-cache\\_npx\\${dirNext23}\\node_modules\\.bin\\..\\@deepseek-ai\\dsh\\lib\\bin.js" web`
       const clAlpha = `"node" "C:\\Users\\u\\AppData\\Local\\npm-cache\\_npx\\${dirAlpha23}\\node_modules\\.bin\\..\\@deepseek-ai\\dsh\\lib\\bin.js" web`
       const origPCL23 = Inst23.processCommandLine
+      // processCommandLine 调用计数桩（CH-23-7 同款手法；只被 ③ 与 ⑤ 使用）。
+      let pclCalls6 = 0
       try {
         // ① 新 pid + 恢复成功 → 记录 channel = 恢复值
         seedInst({ dsh: null, windows: [] })
@@ -6047,13 +6052,21 @@ async function main() {
         r6b.dispose()
         // ③ 同 pid 重新认领、旧记录**有** channel → 保留原值（补丁喂不同值也不覆盖）
         seedInst({ dsh: { pid: 6003, port: 3083, managedBy: 'external', startedAt: '2026-09-10T10:00:00.000Z', channel: 'alpha' }, windows: [] })
-        Inst23.processCommandLine = () => clNext // 恢复会得出 next，但不得覆盖既有 alpha
+        Inst23.processCommandLine = () => { pclCalls6++; return clNext } // 恢复会得出 next，但不得覆盖既有 alpha
         const r6c = newRuntime(process.pid, { port: 3083, processStartQuery: () => null })
+        const callsBefore6c = pclCalls6 // 桩计数基线（本认领过程之前）
         await r6c.adopt(3083, 6003, 'external', 'ok', readInstance().dsh)
         await r6c.writeRegistry()
         check('CH-23-6③ 同 pid 认领 + 旧记录有 channel（alpha）→ 保留原值（补丁喂 next 也不覆盖）+ 来源 = \'registry\'（keep-reuse）',
           readInstance().dsh !== null && readInstance().dsh.channel === 'alpha' &&
           r6c.getLaunchInfo().channelSource === 'registry')
+        // ⑤ 的证据固化：⑤ 的测量窗口固定在 ③（基线 callsBefore6c 取自 ③ 之前），
+        //   但为让运行输出的排列顺序与编号顺序一致（QA-C23-r2-01），⑤ 的 check 放到
+        //   ④ 之后执行；这里先把它的三项证据取好。④ 的补丁 `() => clAlpha` 不是计数
+        //   形态、不递增 pclCalls6，因此先跑 ④ 不会污染已取好的差值。
+        const snap6c = r6c.getLaunchInfo()
+        const rec6cChannel = readInstance().dsh === null ? null : readInstance().dsh.channel
+        const pclDelta6c = pclCalls6 - callsBefore6c
         r6c.dispose()
         // ④ 同 pid 重新认领、旧记录**无** channel、本次恢复成功 → 写入恢复值
         //    （分支 ③，打破「不写 → 读不到 → 显示未知 → 仍然不写」闭环的关键断言）
@@ -6065,8 +6078,64 @@ async function main() {
         check('CH-23-6④ 同 pid 认领 + 旧记录**缺** channel + 本次恢复成功 → 写入恢复值（alpha）——打破闭环的那一步',
           readInstance().dsh !== null && readInstance().dsh.channel === 'alpha')
         r6d.dispose()
+        // ⑤ 0.1.23 收口（T23-02）：③ 已挂计数桩，此处按增量口径断言「跳过判据命中
+        //    → 零新增命令行查询」。判别力：若跳过判据被绕过（落到 2b 补查询），
+        //    桩会因 processCommandLine 被调用而 +1，本断言必红。
+        //    三条证据取自 ③ 的窗口（见上方固化处），故本断言与 ③ 互不掩盖：
+        //    ③ 钉「值 + 来源」，⑤ 钉「调用次数」这一 ③ 钉不住的维度。
+        check('CH-23-6⑤（0.1.23 收口/T23-02）跳过判据命中（旧记录已带 channel → 直接用记录值）→ 本认领过程的 processCommandLine 调用增量 = 0（零新增查询，§5.2.1 第 1 步 / 风险 R-3 的成本上限由此直接钉住）',
+          rec6cChannel === 'alpha' && snap6c !== null && snap6c.channelSource === 'registry' &&
+          pclDelta6c === 0)
       } finally {
         Inst23.processCommandLine = origPCL23
+      }
+      seedInst({ dsh: null, windows: [] })
+
+      // ⑥ 0.1.23 收口（测试专家验收建议 T23-01）：受管拉起成功落点的来源标注
+      //    runtime 侧断言。设计 §六 改动点 6 要求 launchManaged 成功落点把
+      //    attachedChannelSource 置为 'launch-option'（src/runtime.ts L711-715）。
+      //    CH-23-5③⑦ 只在渲染层喂入测试自己写的字符串，钉不住这段赋值；本断言
+      //    真跑 start() → launchManaged() → 成功落点，读 getLaunchInfo() 的真值。
+      //    装置：RuntimeOptions.dshProcessFactory 注入（PU-21-1/5 同款 spawn 计数
+      //    装置），mock start() 在目标端口真实监听后返回成功结果。
+      //    判别力：若 L715 的赋值被删/写错，本断言必红（channelSource 会退化为 null）。
+      {
+        const http6 = require('node:http')
+        const port6e = await findBindablePort()
+        let launched6e = 0
+        const srv6e = http6.createServer((req, res) => {
+          res.writeHead(200, { 'Content-Type': 'text/html' })
+          res.end('<html>window.__DSH_BOOT__ = {}</html>')
+        })
+        const factory6e = (opts) => ({
+          start: async () => {
+            launched6e++
+            await new Promise((r2) => srv6e.listen(opts.port, '127.0.0.1', r2))
+            return {
+              pid: 4400 + launched6e, servicePid: 4500 + launched6e, port: opts.port,
+              url: `http://127.0.0.1:${opts.port}`,
+              logFile: path.join(dataDir, `ch23-launch-${launched6e}.log`),
+              resolved: null, authToken: null,
+            }
+          },
+        })
+        seedInst({ dsh: null, windows: [] })
+        const r6e = newRuntime(process.pid, {
+          port: port6e, channel: 'alpha', dshProcessFactory: factory6e,
+          probeIntervalSec: 0, processStartQuery: () => null,
+        })
+        try {
+          await r6e.start()
+          const info6e = r6e.getLaunchInfo()
+          check('CH-23-6⑥（0.1.23 收口/T23-01）受管拉起成功落点（真跑 start() → launchManaged）→ 快照 channel = 启动通道 alpha 且 channelSource === \'launch-option\'（runtime 侧真值，非渲染层喂入字符串）',
+            port6e !== null && launched6e === 1 && r6e.state === 'ready' &&
+            info6e !== null && info6e.channel === 'alpha' &&
+            info6e.channelSource === 'launch-option')
+        } finally {
+          r6e.dispose()
+          try { srv6e.closeAllConnections() } catch { /* best-effort */ }
+          srv6e.close()
+        }
       }
       seedInst({ dsh: null, windows: [] })
     }
