@@ -12,6 +12,23 @@ meta:
   # 关联的 workspace 标题（display 用）
   title: dsh-vscode-agent (TypeScript / VS Code Extension)
 
+# 路径骨架 —— 契约与 skill 中的 {{paths.*}} 占位符解析到此处。
+# **2026-09-18 新增**：契约里已出现 {{paths.tools}} / {{paths.changelog}} 等占位符，
+# 而本文件此前没有本节，解析不到会让路径退化成占位文本。换项目时改这里，不改契约。
+paths:
+  source: src/
+  tests: scripts/
+  docs: docs/
+  changelog: docs/CHANGELOG-设计文档.md   # 实测存在
+  # 运行台账（每链闭环节追加一行；由 QA 契约「最小留存台账 P3c」引用）
+  # 2026-09-19 迁移补键：新契约已含 {{paths.run_ledger}}，此前本文件没有该键。
+  run_ledger: docs/CHANGELOG-运行台账.md
+  contracts: .dsh/contracts/
+  skills: .dsh/skills/
+  tools: .dsh/tools/
+  verify_rewrite: .dsh/tools/verify-rewrite.mjs
+  remote_entry: none                      # 无远程写入入口
+
 # 技术栈骨架 —— 引擎据此选择构建/测试/校验行为，不注入模型自由文本
 tech_stack:
   language: typescript
@@ -20,23 +37,52 @@ tech_stack:
     tool: tsc
     compile: npm run compile     # tsc -p ./ → out/
     package: npm run package     # vsce package → *.vsix
+  # 2026-09-19 迁移补键：deploy-standard 的 clean 目标会解析 {{tech_stack.clean}}。
+  # 本项目无独立清理命令（tsc 产物 out/ 由重新编译覆盖，不入库），据实填 none，
+  # 部署契约的 clean 目标据此判「不适用」，而不是要求一条不存在的命令。
+  # 位置与 agent-mode 正本一致（tech_stack 的直接子键），使占位符能精确解析。
+  clean: none
   node: ">=20"
   test:
     runner: node
     unit: node scripts/sim.mjs   # 纯 Node 无头生命周期验收
     gui: docs/联调测试剧本.md      # 需真实 VSCode 的 GUI 联调
   module_layout:               # 模块/依赖分层（QA 代码审计 C2 检查项）
+    # 2026-09-19 迁移订正：原列表停留在 6 文件期（列了已拆分的 webview.ts，漏了
+    # dshResolver/authProxy/channelProbe/channelSelect/launchInfo/panelMessages/
+    # webviewDetails/webviewHtml）。本次按「实际 import 'vscode' 与否」逐文件核对订正。
     src:
       - extension.ts          # 激活/命令/配置/状态栏/生命周期钩子（vscode 耦合）
       - webview.ts            # 右侧边栏 iframe 面板（vscode 耦合）
+      - webviewDetails.ts     # 面板详情渲染（vscode 耦合，实测 import 'vscode'）
+      - webviewHtml.ts        # 面板 HTML 拼装（纯 Node）
+      - panelMessages.ts      # 面板消息协议（纯 Node）
       - runtime.ts            # 启动路径编排（纯 Node）
       - instance.ts           # 实例注册表 + 启动锁 + pid/端口校验（纯 Node）
       - dshProcess.ts         # dsh 子进程监督（纯 Node）
+      - dshResolver.ts        # dsh 可执行文件解析（纯 Node）
+      - channelProbe.ts       # 通道探测（纯 Node）
+      - channelSelect.ts      # 通道选择（纯 Node）
+      - authProxy.ts          # 认证代理（纯 Node）
+      - launchInfo.ts         # 启动信息（纯 Node）
       - paths.ts              # 数据目录（纯 Node）
   isolation:
-    - "纯 Node 层（runtime/instance/dshProcess/paths）不 import 'vscode'，可独立无头测试"
-    - "vscode 耦合层（extension/webview）仅经 runtime 订阅状态，不直连 dsh 进程"
+    - "纯 Node 层（runtime/instance/dshProcess/dshResolver/channelProbe/channelSelect/authProxy/launchInfo/panelMessages/webviewHtml/paths）不 import 'vscode'，可独立无头测试"
+    - "vscode 耦合层（extension/webview/webviewDetails）仅经 runtime 订阅状态，不直连 dsh 进程"
   data_dir: "%LOCALAPPDATA%\\DshVscode"   # 实例注册表/锁/日志
+
+# 与"构建"等价的本地校验入口（2026-09-19 迁移补键：新契约要求 checks，此前本文件缺）
+# 用途：把「怎么验证这个项目」写成可执行的单一入口，契约里不再出现项目命令字面量。
+checks:
+  compile: npm run compile                # tsc -p ./ → out/（等价于构建）
+  unit: node scripts/sim.mjs              # 纯 Node 无头生命周期验收（1500 行级，期望 8/8 PASS）
+  package: npm run package                # vsce package → dsh-vscode-agent-*.vsix
+  gate: none                              # 本项目无对外质量闸门入口
+  contract_checks:                        # 交付件自检（随 .dsh/ 交付，任何消费项目都可跑）
+    ref_integrity: node .dsh/tests/ref-integrity-check.mjs
+    profile_ref: node .dsh/tools/profile-ref-check.mjs
+    line_caliber: node .dsh/tests/lib-lines-check.mjs
+    code_gate_three_state: node .dsh/tests/code-gate-check.mjs
 
 # 部署骨架 —— 引擎据此生成打包/发布校验（非服务器部署，见 deploy-standard.md）
 deploy:

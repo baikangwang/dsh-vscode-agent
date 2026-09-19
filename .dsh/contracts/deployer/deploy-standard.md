@@ -1,77 +1,98 @@
-# contracts/deployer — 部署/发布专家契约与规则（形态 B，按角色注入）
-> 来源基线：baseline/project/agents/部署专家.md、baseline/global/rules/04-部署与验证.mdc、baseline/project/rules/Git提交编码规范.mdc
-> 注入时机：编排者调度到「部署专家」阶段 / 打包、发布、安装验证时
-> 本工程：dsh-vscode-agent —— **分发物为 VSIX 扩展，非容器/服务**，故本角色职责=「打包 & 发布 & 安装验证」，
-> 无 Makefile/Docker/Harbor/K8s/SSH。声明式骨架见 `.dsh/profile.yaml` 的 `deploy` 段。
+# contracts/deployer — 部署专家契约与规则（形态 B，按角色注入）
+> 来源基线（**模式仓库 agent-mode 的历史溯源，目标项目不需要 `baseline/`**）：baseline/project/agents/部署专家.md、baseline/global/rules/04-部署与验证.mdc、baseline/project/rules/Git提交编码规范.mdc
+> 注入时机：编排者调度到「部署专家」阶段 / 部署操作时
+
+> **项目专属取值一律来自 `.dsh/profile.yaml`**（2026-09-18 修订）。占位符 `{{paths.*}}` / `{{tech_stack.*}}` 解析到对应键。
+> **`profile.yaml` 未声明 `deploy` 的项目（如本仓库 agent-mode），本契约整体不适用**——由架构师在接入时判定并说明，不留着不执行。
+
+## 三段职责必须分清（2026-09-18 修订）
+
+此前本契约自相矛盾：一处称"真实 K8s 部署执行属排他（Jenkins 负责）"，另一处又规定部署专家远程跑 `kubectl` 并验证 rollout。现明确为三段：
+
+| 段 | 归属 | 内容 |
+|---|---|---|
+| **写编排定义** | **部署专家** | Makefile、构建/镜像定义 |
+| **执行部署** | **Jenkins（排他）** | 真实 K8s 部署执行；AI 不直接执行 |
+| **只读验证** | **部署专家** | 经 `{{paths.remote_entry}}` 只读查询 rollout 状态与镜像 tag，**不写入集群** |
 
 ## 职责与边界
-- 正式产出：`*.vsix` 打包产物 + `version` 提升 + 发布/安装验证
-- 临时产出：`.dsh/tmp/deployer/deploy_{timestamp}.json`（打包报告、dry-run 草稿，闭环清理）
-- 排他：VSIX 的正式安装/卸载由用户在 VSCode 执行；AI 只负责打包、版本、安装命令与验证方案
-- **禁止写入**：`src/`、`docs/`（版本/变更记录写 docs 属文档职责，可协作）
+- 正式产出：Makefile 编写（及 profile 声明的部署编排定义）
+- 临时产出：`.dsh/tmp/deployer/deploy_{timestamp}.json`（部署报告、dry-run 草稿，闭环清理）
+- 排他：Jenkins 流水线配置、真实 K8s 部署执行（由 Jenkins 负责）；AI 仅写 Makefile/编排定义
+- **禁止写入**：`{{paths.source}}`、`{{paths.docs}}`
 
-## 打包标准流程（基线 = 普通终端）
-```powershell
-# 编译（tsc → out/，跳过脚本以规避 DSH 沙箱限制时用以下命令）
-npm run compile                 # 或 node node_modules\typescript\bin\tsc -p tsconfig.json
-# 无头验证（打包前必过）
-node scripts/sim.mjs            # 8/8 PASS 期望
-# 打包
-npm run package                 # vsce package --no-dependencies → dsh-vscode-agent-<ver>.vsix
+## Makefile 标准结构
+
+> **下面只给"形状"，不给取值。** 四个变量（`REGISTRY` / `IMAGE` / `SERVICE` / `PLATFORM`）
+> 以及 build/clean 命令**一律取自 `profile.yaml` 与目标项目现有 Makefile**。
+>
+> **2026-09-18 修订**：本节此前把 compute-core 的字面量当作"标准结构"——
+> `harbor-local.unicloudsrv.com/moove`、`uca-compute-core`、`./gradlew build -x test`、`./gradlew clean`。
+> 后果具体：**非该技术栈的项目接入后，本节要么原样照抄（写进错的仓库地址），要么整节作废**。
+> 现在是"填空"，不是"照抄"。
+
+```makefile
+REGISTRY ?= {{deploy.registry}}          # 目标项目的制品仓库
+PLATFORM ?= {{deploy.arch}}         # 目标架构
+DOCKERFILE ?= Dockerfile
+IMAGE ?= {{deploy.service}}
+SERVICE ?= {{deploy.service}}
+VERSION := $(shell git describe --dirty --always --tags | sed 's/-/./g')
+GIT_COMMIT := $(shell git rev-parse --short HEAD)
+
+.PHONY: build
+build:
+	@{{tech_stack.build}}                  # 项目未声明构建系统 → 本目标判「不适用」
+
+.PHONY: image.develop.tag
+image.develop.tag: build
+	# 制品构建 + 推送 + 滚动更新
+
+.PHONY: image.release.tag
+image.release.tag: build
+
+.PHONY: image.remove
+image.remove:
+	docker image rm $(REGISTRY)/$(IMAGE):$(VERSION)
+
+.PHONY: clean
+clean:
+	@{{tech_stack.clean}}
 ```
-- 打包依赖 `.vscodeignore`：排除 `node_modules/ .npm-cache/ src/ out/ scripts/ docs/ .dsh/` 等，仅收
-  `package.json README.md LICENSE media/ out/` 及 manifest（对照现有包 12 文件 / ~20KB 量级）。
-- `package.json` 的 `version` 同步递增（publisher `dsh-vscode-agent`）；`engines.vscode ^1.134.0` 勿随意降低。
 
-## 版本与渠道
-- 发版流程：`version` 提升（0.1.x）→ 编译 → sim 全过 → `npm run package` → 记录产物 hash/大小。
-- 产品无关的自动升级渠道由 dsh 运行时承担（`dsh.channel` latest/preview），扩展本身作为薄壳不打 dsh。
-- 变更摘要写入 `docs/开发报告.md`（历史版本表格）+ `docs/联调测试剧本.md`（复测项）。
+## 关键约束
+- build：`{{tech_stack.build}}`；**项目未声明构建系统时本项判「不适用」，不是 FAIL**
+- 制品构建：多架构 buildx + push；**构建命令与产物路径取自 profile 的 `tech_stack.build`**，
+  不预设 jar/镜像层细节（原写死 `--build-arg JAR_FILE=build/libs/*.jar`，只对 Gradle 项目成立）
+  - 开发版 tag：$(REGISTRY)/$(IMAGE):$(VERSION).$(GIT_COMMIT)
+  - 正式版 tag：$(REGISTRY)/$(IMAGE):$(VERSION)
+- 部署（通过 {{paths.remote_entry}}）：按目标项目的编排方式执行；**本契约不预设 kubectl**
+- **以目标项目现有 Makefile 为参考模板**——这是首位的，上面的形状是兜底
 
-## 安装 / 发布验证（替代 Docker/K8s 部署验证）
-1. **离线安装**：`code --install-extension .\dsh-vscode-agent-<ver>.vsix`；
-   重装前先卸载旧版（扩展面板 → DSH Panel → Uninstall），并**完全退出 VSCode**（清残留 `Code` 进程）。
-2. **安装后冒烟**（场景 A/B，见 `docs/联调测试剧本.md`）：右侧边栏出现 DSH 面板（带样式，不卡 `initializing`）、
-   注册表 `dsh.pid` 非 null、状态栏 `● DSH 3080`。
-3. **取证命令**（判定依据，非部署操作）：
-   - 注册表：`Get-Content "$env:LOCALAPPDATA\DshVscode\instance.json"`
-   - 日志：`$env:LOCALAPPDATA\DshVscode\logs\dsh.log`、`logs\runtime.log`
-   - 端口：`netstat -ano | findstr :3080`；进程：`tasklist /FI "PID eq <pid>"`
-4. **防误杀满足性自查**：最后窗口关停前 dsh.pid 存活 + 端口仍监听 + 页面含 `__DSH_BOOT__` 三重复核；外部实例接管须命令行校验含 dsh 特征。
-5. 产物核对：`vsix` 大小/文件清单、版本号、`.vscodeignore` 生效（无源码/依赖误打包）。
+## 部署验证
+1. 部署后验证服务已用新版本：经 {{paths.remote_entry}} 远程查询 deployment 镜像 tag，与本地 VERSION 一致
+2. 确认 rollout 完成、Pod Ready：经 {{paths.remote_entry}} 远程 `kubectl rollout status deployment/<service>`
+3. 构建缓存：重新执行 `{{tech_stack.build}}` + 制品构建，确认产物确为本次构建（避免构建层/Docker 层缓存带进旧产物）
 
 ## 脚本复用原则
-1. 依赖安装/构建优先复用项目已有脚本与 `package.json` scripts（compile/package/watch）
-2. 在原有脚本上更新升级能力，不写重复逻辑
-3. 新脚本写入对应功能目录（`scripts/`）
-4. 禁止临时脚本散落根目录、重复实现已有功能
+1. 依赖/组件下载优先级：服务器网络 → 本地代理 → 本地桥接代理
+2. 脚本优先复用当前项目已有脚本
+3. 在原有脚本上更新升级能力，不写重复逻辑
+4. 新脚本写入对应功能目录（tools/、scripts/、deploy/）
+5. 禁止临时脚本散落根目录、重复实现已有功能
 
-## 经验教训（本工程历史坑）
+## 经验教训
 | # | 教训 | 规则 |
 |---|------|------|
-| 1 | 构建基线 | 普通终端为基线；DSH 沙箱内 `npm install` 会被拒（写 `%LOCALAPPDATA%\npm-cache` EPERM + spawn 管道 EPERM）→ 沙箱内用 `node tsc` + 工作区 `.npm-cache`，如实记录环境差异 |
-| 2 | 容器 id | VSCode 视图容器/命令 id 必须匹配 `^[a-z0-9_-]+$`（Bug A：`dsh.viewContainer` 含点号被拒）；location key 用 `secondarySidebar`（auxiliarybar 已改名） |
-| 3 | webview CSP | 须 `style-src 'unsafe-inline'; script-src 'unsafe-inline'` 放行 VSCode 注入（Bug C），否则面板无样式、卡 `initializing` |
-| 4 | 外部接管 pid | `adoptedPid` 必须持久化，否则注册表 `dsh.pid` 恒 null → 最后窗口不关停（Bug B） |
-| 5 | 防误杀 | 外部实例唯经 netstat + 命令行校验后接管；关停前三重复核，任一失败不杀（安全侧） |
-| 6 | 外网出口 | 本机直连外网常被断（connection reset/timeout）；外网操作（git push/fetch、npm registry）须显式走本地代理：`git -c http.proxy=http://127.0.0.1:10808 -c https.proxy=http://127.0.0.1:10808 <cmd>`；DSH 沙箱内 GCM 无法交互提示凭据（命名管道被禁）→ push 前先在普通终端带同代理参数推/拉一次，缓存凭据 |
+| 1 | platform 格式 | linux.amd64 需转 linux/amd64 供 Docker buildx |
+| 2 | JAR 文件 | 使用 build/libs/*.jar 通配，避免硬编码版本号 |
+| 3 | 多架构 | buildx 需 docker buildx create --use 预先创建 builder |
+| 4 | K8s 部署 | 通过 {{paths.remote_entry}}，不直接 ssh |
 
-## 部署/发布报告
-写入 `.dsh/tmp/deployer/deploy_{timestamp}.json`：
-```json
-{
-  "timestamp": "ISO8601",
-  "type": "vsix",
-  "version": "0.1.2",
-  "artifact": "dsh-vscode-agent-0.1.2.vsix",
-  "size_bytes": 21430,
-  "compile_passed": true,
-  "sim_passed": {"total": 8, "passed": 8},
-  "vscodeignore_verified": true,
-  "changes": ["Bug A/B/C 修复…"]
-}
-```
-临时报告闭环时清理；链级闭环时 `.dsh/reports/` 随 `.dsh/tmp/` 一并清空（最终发布结论由编排者在本会话向用户汇报，不保留永久档案）。
+## 部署报告
+写入 `.dsh/tmp/deployer/deploy_{timestamp}.json`（含 targets_defined、variables_defined、gradle_build）。
+若含前端变更，须含 frontend_assets_verified（local/remote 文件数对比 + 采样 URL 状态）。
+临时报告闭环时清理；链级闭环时 `.dsh/reports/` 随 `.dsh/tmp/` 一并清空（最终部署结论由编排者在本会话向用户汇报，不保留永久档案）。
 
 ## Git 提交编码（应对中文乱码）
 - **推荐链路**：用 `write`/`edit` 工具写提交信息（干净 UTF-8、无 BOM）→ `git commit -F <文件>`（git 直接读文件字节，不经 PowerShell 解码）

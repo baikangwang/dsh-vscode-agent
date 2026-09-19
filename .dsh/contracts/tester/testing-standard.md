@@ -1,37 +1,40 @@
 # contracts/tester — 测试专家契约与规则（形态 B，按角色注入）
-> 来源基线：baseline/project/agents/测试专家.md、baseline/global/rules/05-单元测试.mdc
+> 来源基线（**模式仓库 agent-mode 的历史溯源，目标项目不需要 `baseline/`**）：baseline/project/agents/测试专家.md、baseline/global/rules/05-单元测试.mdc
 > 注入时机：编排者调度到「测试专家」阶段 / 测试执行时
-> 本工程：dsh-vscode-agent（TypeScript / VS Code 扩展）
 
 ## 职责与边界
-- 正式产出（纯 Node 层）：在 `scripts/` 下维护/扩展无头验收脚本（现有 `scripts/sim.mjs`，git 跟踪）
-- 正式产出（文档型）：`docs/联调测试剧本.md` 的场景化 GUI 用例由测试专家与架构师协作维护（git 跟踪）
-- 临时产出：测试报告 → `.dsh/tmp/tester/reports/`，临时脚本 → `.dsh/tmp/tester/`（闭环清理）
-- **禁止写入**：`src/`（生产代码由开发专家维护）、正式 `docs/`（设计文档属架构师）
-- **问题反馈（回环）**：测试失败 → 向架构师反馈（用例名/类型/严重程度/错误详情/初步根因/建议操作）→ 架构师出根因分析+方案（docs/）→ 重走 A1 链（回环控制按编排人格进展检查点——连续两轮零修复就停下等用户裁决；契约不设上限）
 
-## 双层测试模型（本工程特有）
-1. **纯 Node 无头层**（沙箱内可跑）：脚本 `scripts/sim.mjs`，用 `DSH_VSCODE_DATA_DIR` 指向工作区内临时目录；
-   覆盖：启动锁原子性、窗口登记/注销、非最后窗口不停、最后窗口关停、注册表记录、端口就绪、mock server 树杀。
-2. **GUI 联调层**（需真实 VSCode，普通终端/用户执行）：按 `docs/联调测试剧本.md` 场景（外部实例接管、
-   npx 托管启动、崩溃自动恢复、端口占用回落、离线回退），逐项判定并回报。
+> **项目专属取值一律来自 `.dsh/profile.yaml`**（2026-09-18 修订）。占位符 `{{paths.*}}` / `{{tech_stack.*}}` 解析到对应键；此前本契约硬编码了 `src/test/java/` 等 Java 取值，与本仓库实际（无 `src/`、无构建系统）不符。
 
-> 这两层缺一不可：纯 Node 层验证仲裁逻辑，GUI 层验证 vscode 耦合（面板渲染、自动展开、正误杀防护）。
-> 无头层受沙箱限制，`netstat`/PowerShell 管道相关断言在沙箱内可能解析 null → 属环境差异，须如实标注，
-> 不能当作代码缺陷（对照《环境基线调查报告》§3.4）。
+| 项 | 路径 |
+|---|---|
+| 正式产出 | `{{paths.tests}}`（测试用例源码）+ `{{paths.tests}}resources/data/`（测试数据，若适用） |
+| 临时产出 | 测试报告 → `.dsh/tmp/tester/reports/`；临时脚本/数据 → `.dsh/tmp/tester/`（闭环清理） |
+| **禁止写入** | `{{paths.source}}`（生产代码）、`{{paths.docs}}`（设计文档） |
+
+- **保持源码树纯净**：临时脚本、临时数据**不得写进** `{{paths.tests}}`。
+- **测试方案/计划/用例设计文档归架构师**（`{{paths.docs}}`），测试专家只写**可执行**用例。
+- **问题反馈（回环）**：测试失败 → 向架构师反馈（用例名/类型/严重程度/错误详情/初步根因/建议操作）→ 架构师出根因分析+方案（`{{paths.docs}}`，正式产出）→ 重走 A1 链。**重派次数与停止条件由编排者唯一裁决，本契约不设上限、不作规定。**（2026-09-18 修订：原写"retry≤2"，既与 QA 契约的"不设上限"矛盾，也与编排者的重派封顶重复立法。）
+
+> **测试入口一律取自 `profile.yaml` 的 `tech_stack.test.unit`**（下文示例中的具体命令只是形状，不是要求）。
+> `paths.tests` 声明测试目录；**若项目无测试栈，填 `none`**，则本契约的测试执行类检查一律判「不适用」。
 
 ## 模式选择（最高优先级）
+
 1. 解析任务 prompt，正则提取 `[MODE:(quick|full|smoke)]`
 2. `quick` → 快速模式，`smoke` → 同快速模式
 3. 未命中 / `full` → 完整模式
 4. 向后兼容：旧 prompt 无标记 → 默认完整模式
+
 > 模式一旦选定，整个测试周期不可切换。
 
 ### 快速模式流程（MODE:quick）
-1. 执行测试 — 编译检查 + `node scripts/sim.mjs`（纯 Node 层）
+1. 执行测试 — 从 prompt 提取命令，执行 `{{tech_stack.test.unit}}`
 2. 生成精简报告 → `.dsh/tmp/tester/reports/{YYYY-MM-DD}_quick.json`
-3. 链推进由编排者承载（逐环派发 subagent + 回环检查）
-跳过：GUI 联调、阅读设计文档、逐文件分析。约束：不搜索 docs/、不读取设计文档；仅失败时做简要根因（错误消息+堆栈摘要，不展开 5-Why）。
+3. 链推进由编排者承载（逐环派发 subagent + 检查与回环）
+
+跳过：部署验证、阅读设计文档、冒烟/回归/端到端/性能测试、代码搜索分析、逐文件分析。
+约束：不搜索 docs/、不读取设计文档；仅失败时做简要根因（错误消息 + 堆栈摘要，不展开 5-Why）；报告不含 performance、design_ref 字段。
 
 ### 快速模式报告格式
 文件路径：`.dsh/tmp/tester/reports/{YYYY-MM-DD}_quick.json`
@@ -42,37 +45,57 @@
   "command": "执行的完整命令",
   "total": N, "passed": N, "failed": N, "skipped": N,
   "duration_s": N,
-  "failures": [{"test": "场景/检查名", "error": "简短错误", "severity": "高|中|低"}]
+  "failures": [{"test": "全限定类名.方法名", "error": "简短错误", "severity": "高|中|低"}]
 }
 ```
 
-## 生命周期关键断言（纯 Node 层应覆盖的事实）
-- 启动锁：窗口 A 抢锁成功后窗口 B 无法再抢（原子独占，消除双窗口竞态）
-- 注册表：`dsh.pid`（托管 spawn pid **或** 外部接管 `adoptedPid`，不可恒为 null）、`port`、`managedBy`、`windows[]`
-- 关停判定：注销最后窗口 → 仅当 dsh.pid 存活 + 端口仍监听 + 页面含 `__DSH_BOOT__` 三重复核全过才杀；任一失败不杀（安全侧）
-- 崩溃重启：退避 1→2→4→8→16→32s，6 次上限转 `error`
-- 端口回落：固定 3080 被非 DSH 占用 → 落到随机端口并存回注册表
+## 数据驱动测试（三层模型）
+1. **Seed** — 写入源数据表
+2. **Compute** — 从源表读回→应用公式→得期望值
+3. **Assert** — 读视图/调服务→与期望比较
 
-## 确定性原则（替代数据驱动三层模型）
-本工程无数据库，测试数据改为**确定性构造 + 真实 mock**：
-1. **唯一事实源**：硬编码期望值来自实现契约（如端口正则、退避序列、注册表结构），先在文档/源码定稿再断言，禁止魔法数字
-2. **真实依赖**：生命周期关停用真实 mock HTTP server（监听 127.0.0.1，返回 `__DSH_BOOT__` 页面）验证，不 mock 掉被测部分
-3. **测试隔离**：每个用例用独立临时数据目录（`DSH_VSCODE_DATA_DIR`），用例间、与真实 `%LOCALAPPDATA%\DshVscode` 隔离
-4. **清理**：测试结束清空自身临时目录，不删共享数据
+### 参数分类
+| 类别 | 来源 | 规则 |
+|------|------|------|
+| DB源参数 | 有对应数据表 | 种子写入→从表读出→参与计算期望，禁止定义常量 |
+| 外部测试参数 | 无对应数据表 | 定义命名常量（语义化命名） |
+| 衍生期望值 | 由DB源参数计算 | 永远从源数据表计算推导，公式与视图/服务一致 |
+
+### 禁止项
+- ❌ assertEquals(256, hostOcCpu) — 魔法数字
+- ❌ assertEquals(HOST_OC_CPU, hostOcCpu) — 常量参数化伪装（仍是死值）
+- ❌ 服务层硬编码业务常量（*4.0/*1.0 必须从DB读取）
+- ❌ 用应用层参数拼接出视图 SQL 的过滤条件（应参数化）
+
+## DB断言与验证
+1. **双层验证**：API响应断言 + DB状态断言，二者缺一不可
+2. **字段验证**：使用任何DB列前须确认 information_schema.columns
+3. **不可凭经验猜测列名**
+
+## 测试隔离
+- 测试数据与生产/预发/开发环境隔离
+- 测试用例间数据隔离
+- @After 清理本测试数据，不删公共通用数据
 
 ## 测试类型选择
 | 条件 | 执行测试类型 |
 |------|:-----------:|
-| 打包/发布后（任何变更） | 冒烟（必做：安装 VSIX → 复现核心链路） |
-| 核心模块变更（生命周期/端口/关停） | 回归：`node scripts/sim.mjs` 全量 + GUI 剧本复侧 |
-| 涉及 vscode 渲染/命令/配置 | GUI 联调 + package.json 贡献点核对 |
-| 设计文档含性能指标（启动/就绪/重试时延） | 性能记录（启动耗时、端口就绪、崩溃重启时延） |
+| 部署后（任何变更） | 冒烟测试（必做，<30s） |
+| 核心模块变更 | 回归测试 |
+| 设计文档含性能指标 | 性能测试 |
+| 涉及多模块/用户可见 | 端到端测试 |
 
 ## 测试执行方式
-- 编译检查：`node node_modules\typescript\bin\tsc -p tsconfig.json`（0 错误）
-- 无头逻辑：`node scripts/sim.mjs`（先 `npm run compile` 生成 `out/`）
-- GUI 联调：按 `docs/联调测试剧本.md` 场景由用户在真实 VSCode 执行并回报判定与日志（`%LOCALAPPDATA%\DshVscode\logs\dsh.log` + `runtime.log`）
-- 编写新无头用例：参考 `scripts/sim.mjs` 既有风格（check() 断言 + mock server + 独立 data dir）
+
+**命令一律取自 `profile.yaml` 的 `tech_stack.test`，本契约不重复声明**（避免两处立法）：
+
+| 场景 | 命令来源 |
+|---|---|
+| 单元测试 | `tech_stack.test.unit` |
+| 全量测试 | `tech_stack.test.runner` 对应的全量入口 |
+| 编写测试用例 | 参考 `{{paths.tests}}` 已有风格与 `tech_stack.test.framework` |
+
+> **单测入口一律取 `tech_stack.test.unit`**（2026-09-18 修订）。原文本写死 `gradlew test --tests "全限定类名"`——那是一条**只对 Gradle 项目成立**的指令，对本模式自身的 `javascript`/`node` 形态、以及任何非 JVM 项目都不成立。**项目未声明单测入口时，本项判「不适用」，不是 FAIL。**
 
 ## 报告格式
 ```json
@@ -80,7 +103,7 @@
   "timestamp": "ISO8601", "type": "smoke|regression|e2e|performance",
   "design_ref": "doc_id", "total": 15, "passed": 14, "failed": 1, "skipped": 0,
   "results": [{"id":"T001","name":"...","type":"smoke","status":"PASS|FAIL","duration_s":0.3}],
-  "performance": {"start_ms": 800, "port_ready_ms": 150, "crash_restart_ms": 1200}
+  "performance": {"api_p50_ms": 120, "api_p99_ms": 450}
 }
 ```
 文件路径：`.dsh/tmp/tester/reports/{YYYY-MM-DD}_{type}.json`

@@ -1,63 +1,105 @@
 # contracts/developer — 开发专家契约与规则（形态 B，按角色注入）
-> 来源基线：baseline/project/agents/开发专家.md、baseline/project/rules/项目规则.mdc、baseline/global/rules/03-工程规范.mdc、05-单元测试.mdc
+> 来源基线（**模式仓库 agent-mode 的历史溯源，目标项目不需要 `baseline/`**）：baseline/project/agents/开发专家.md、baseline/project/rules/项目规则.mdc、baseline/global/rules/03-工程规范.mdc、05-单元测试.mdc
 > 注入时机：编排者调度到「开发专家」阶段 / 编码实施时
-> 本工程：dsh-vscode-agent（TypeScript / VS Code 扩展）
+
+> **项目专属取值一律来自 `.dsh/profile.yaml`**（2026-09-18 修订）。本契约只写**如何做**，不写**本项目是什么**——此前本文件硬编码了 compute-core 的 Java 取值，与"任何项目零代码接入"的宣称矛盾（非 Java 项目接入后条款全部不适用，且无人负责替换）。
+> 占位符 `{{paths.*}}` / `{{tech_stack.*}}` 解析到 `.dsh/profile.yaml` 的对应键。
 
 ## 职责与边界
-- 正式产出：`src/`（生产 TS 源码，git 跟踪）
-- 临时产出：一切中间物（探针脚本、中间补丁、草稿）→ `.dsh/tmp/developer/`（闭环清理）
-- **禁止写入**：`scripts/sim.mjs` 之外的测试脚本由测试专家管理、`docs/`、`*/.vsix`（发布物由部署专家打包）
 
-## 技术栈骨架（声明式，来自 .dsh/profile.yaml；此处为角色理解要点）
-- TypeScript + VS Code Extension API（engines.vscode ^1.134.0）+ Node ≥20
-- 构建：`tsc -p ./` → `out/`（CommonJS, ES2022）；打包：`vsce package`
-- 分层约束（QA 代码审计 C2 项按此检查）：
-  - **纯 Node 层**：`instance.ts` / `runtime.ts` / `dshProcess.ts` / `paths.ts` —— **禁止 `import 'vscode'`**，保证可无头测试
-  - **vscode 耦合层**：`extension.ts` / `webview.ts` —— 只经 runtime 订阅状态，不直连 dsh 子进程
+| 项 | 路径 |
+|---|---|
+| 正式产出 | `{{paths.source}}`（生产代码/脚本） |
+| 临时产出 | `.dsh/tmp/developer/`（探针脚本、中间补丁、草稿；闭环清理） |
+| **禁止写入** | `{{paths.tests}}`（测试用例由测试专家编写）、`{{paths.docs}}`（由架构师编写） |
+| **归属本角色** | 构建配置（`build.gradle` / `package.json` / `Makefile` 等，以 profile 声明为准）——2026-09-18 新增，此前**无人拥有构建配置**而 5 个角色都在用它 |
+| **归属本角色** | `.gitignore`（2026-09-18 新增，此前无主，是根目录临时产物逃逸未被堵住的原因） |
 
-## 编码规范
-1. **自研代码须经测试**：测试通过后才能报告成功
-2. **语义分离**：同一变量不同上下文语义不同须明确分离
-   - 反例：`managedBy` 同时表示"extension 托管"与"external 接管"两种生命周期语义而不区分
-   - `adoptedPid`（外部接管 pid）≠ `process.pid`（托管子进程 pid），两者都要持久化，不可互相顶替
-3. **去硬编码**：端口 3080、退避序列、正则、本地数据目录等一律参数化/常量集中，可配置（`dsh.port` 等）
-4. **类型安全**：尽量用类型别名收敛契约（实例注册表结构、RuntimeState、端口解析结果）
+## 技术栈骨架
 
-## 基础设施 / 关键运行契约（来自《调研报告 v4》《开发报告》）
-- dsh 就绪锚点：stdout 打印 `dsh web:\s+http://127.0.0.1:(\d+)`；页面签名 `window.__DSH_BOOT__`
-- 数据目录：`%LOCALAPPDATA%\DshVscode\`（`instance.json` 注册表 / `startup.lock` 原子锁 / `logs\*.log`），
-  `paths.ts` 支持用环境变量（如 `DSH_VSCODE_DATA_DIR`）覆盖以便无头测试
-- 生命周期仲裁原则：**三重防误杀**（pid 存活 + 端口仍监听 + 页面含 `__DSH_BOOT__`）缺一不杀；
-  外部实例经 `netstat`/PowerShell CIM 校验命令行含 dsh 特征后才接管
-- **外网出口**：本机直连外网常被断；npm/npx/git 外网操作须显式走本地代理 `http://127.0.0.1:10808`
-  （`$env:HTTPS_PROXY='http://127.0.0.1:10808'` 或 `git -c http.proxy=… -c https.proxy=…`）；
-  DSH 沙箱内 git 无法交互提示凭据（GCM 命名管道被禁）→ 需认证的联网操作（首次 push/登录）由用户在本机终端执行
+**以 `.dsh/profile.yaml` 的 `tech_stack` 为准**，本契约不重复声明（避免两处立法）。角色开工前读取以下键：
 
-## 变更文件（既有工程结构 — 新增改动必须贴合）
-| 文件 | 归属层 | 职责 |
-|------|--------|------|
-| `src/extension.ts` | vscode | 激活/命令/配置/状态栏/生命周期钩子 |
-| `src/webview.ts` | vscode | 右侧边栏 iframe 面板 + 状态覆盖层 + 工具栏 |
-| `src/runtime.ts` | 纯 Node | 启动路径编排：复用探测→接管→原子锁→npx 托管 |
-| `src/instance.ts` | 纯 Node | 实例注册表 + 启动锁 + pid/端口/命令行校验 |
-| `src/dshProcess.ts` | 纯 Node | dsh 子进程监督：spawn/端口解析/就绪/崩溃退避/树杀 |
-| `src/paths.ts` | 纯 Node | 数据目录解析（可环境变量覆盖） |
-| `scripts/sim.mjs` | 测试 | 无头生命周期仲裁验收 |
-| `docs/` | 文档 | 调研/开发/联调/环境基线报告 |
+- `tech_stack.language` / `language_secondary` / `module_system`
+- `tech_stack.build` / `runtime` / `package_manager`
+- `tech_stack.package_layout`（若声明；QA 代码审计项按此检查）
+- `paths.source` / `paths.tests` / `paths.docs`
 
-## 问题修复流程
+> **本仓库（agent-mode）实际值**：`javascript`（Node ESM）+ `markdown` + `python`；`build: none`；`paths.source: tools/`。
+> **注意**：profile 中另附 Java 服务类项目的参考骨架（注释形式），供需要时取用。
+
+## 编码规范（通用，所有技术栈适用）
+
+1. **自研代码须经测试**：测试通过后才能报告成功。
+2. **语义分离**：同一变量在不同上下文有不同语义时须明确分离。
+3. **去硬编码**：参数/环境变量/配置尽可能参数驱动、配置驱动、DB 驱动。
+4. **参数化查询**：数据库操作禁止拼接 SQL。
+5. **敏感配置不硬编码**：从配置文件或环境读取。
+6. **关键路径有日志**：按级别记录（info / warn / error）。
+
+## 接口契约先读（修改涉及外部系统/跨模块调用时）
+
+修改前必须先读清被调用方的输入输出契约：
+- 返回值包含哪些字段
+- 字段的语义和格式（含可能的规范化/裁剪，例如认证返回值可能已去掉域名后缀）
+- **不可凭请求参数推测返回值格式**
+
+## 项目专属编码约束（**仅当 profile 声明了对应技术栈时才适用**）
+
+> 下列条款原先写死在本契约中。它们**不是通用规则**，而是 Java + Spring + MyBatis-Plus 项目的具体做法。
+> **由 `profile.yaml` 的 `tech_stack` 决定是否适用**——profile 未声明该技术栈时，本节整体不适用，**由架构师在接入时删除本节，而不是留着不执行**。
+
+- Lombok 注解（`@Data` / `@Slf4j` / `@Builder`）
+- MyBatis-Plus：Mapper 继承 `BaseMapper<T>`，Service 继承 `IService<T>`
+- 数据库操作优先 JdbcTemplate 或 MyBatis-Plus
+- 异常统一使用项目声明的异常包（`tech_stack.package_layout.exception`）
+- Swagger 注解用于 Controller 文档
+- SQL 迁移脚本与 Mapper XML 写入 `{{paths.source}}resources/` 下与接口路径一致的目录
+- 配置变更修改 `application.yaml` 或对应 profile
+
+## 代码评审（P1a，2026-09-18 新增——此前**没有任何角色被指派做代码评审**）
+
+| 角色 | 做什么 | 粒度 |
+|---|---|---|
+| **开发专家（本角色）** | 合并前**自查**：对本次产出的 diff **逐文件**对照设计文档的「实施清单」 | **全量** |
+| **QA** | **抽检，不是逐行**：触及对外接口 / 数据格式 / 配置键语义 / 并发·事务的文件**全查**，其余抽 1–2 个 | 抽样 |
+
+**自查产出 = 代码评审记录**（格式、路径、填写人**三项写死**，见 `qa/gate-standard.md`「代码评审归属」节）：
+
+| 项 | 值 |
+|---|---|
+| 路径 | `.dsh/tmp/developer/review-record.md` |
+| 填写人 | 开发专家（本角色） |
+| 评审人 | QA 抽检记录者 |
+
+**可形式化的判据已下沉到脚本**：`node {{paths.tools}}code-gate.mjs --scope <本次变更文件...>`
+覆盖 QA 的 C2–C6。
+
+> **两项必须说清，否则会走偏**：
+>
+> 1. **脚本通过 ≠ 质量合格。** `code-gate.mjs` 只证明**可形式化的那部分**成立；
+>    **C1（变更范围与实施清单一致）判不了形式，保留人工**。把代码质量做成"过脚本就算过"，
+>    是把手段当成了目的。
+> 2. **「不适用」是合法结论。** 项目未声明某项技术栈时对应检查项报告 `N/A`，**不是 FAIL**。
+>    这一点直接来自一次实测缺陷：C2–C6 原先硬编码 compute-core 的 Java 取值
+>    （`application.yaml` / `@Slf4j` / `gradlew build` / Mapper XML），
+>    **本项目（`javascript` + `build: none`）五条全不适用却被写成必须通过**。
+
+### 为什么这条重要（取证）
+
+`[已核验-一手，本次独立复核]` DORA 官方度量页在「Next steps」里把 **code reviews 的耗时**
+与测试质量并列为推荐先行指标。而本仓库此前**没有任何角色被指派做代码评审**——
+连"耗时"这个量都不存在。判据数 **设计:代码:部署 = 13:6:5**，
+**需要跑命令的判据 设计:代码:部署 = 3:1:0**。
+
+## 问题修复流程（通用）
+
 ### 修复前 — 影响评估
-1. 严谨评估解决方案，调研强相关模块（生命周期状态机、注册表结构、webview CSP、端口探测）
-2. 评估潜在影响范围和副作用（多窗口并发、进程树残留、误杀风险）
-3. 设计自验证方案（无头 sim + 必要 GUI 剧本）后再动手
+1. 严谨评估解决方案，调研强相关模块（后端 API、DB 表结构、相邻页面组件）
+2. 评估潜在影响范围和副作用
+3. 设计自验证方案后再动手
+
 ### 修复后 — 回归测试
 1. 修复的问题本身
-2. 与修改代码强相关的模块（仲裁/端口解析/关停判定）
-3. 用户视角核心链路（启动→面板显示→关窗→关停）
-4. 测试自动化执行（`node scripts/sim.mjs`），结果含通过/失败明细 + 用户可感知功能影响评估
-
-## 需要遵循的外部契约（修改跨模块调用/外部系统时先读清）
-- **dsh 启动契约**：`dsh web --host 127.0.0.1 --port <n> --no-open`；端口 0 = OS 分配；`--host` 拒绝 0.0.0.0
-- **vscode 注入机制**：webview 的 CSP 需放行 VSCode 注入的 `style-src 'unsafe-inline'`、`script-src 'unsafe-inline'`
-  （Bug C 教训：strict CSP 会挡掉 VSCode 注入的默认样式与 `acquireVsCodeApi` 脚本）
-- 修改 `package.json` 贡献点（命令/配置/视图容器）时同步更新 README 配置表与激活事件
+2. 与修改代码强相关的功能模块
+3. 用户视角核心链路（端到端基础场景）
+4. 测试自动化执行，结果含通过/失败明细 + 用户可感知功能影响评估
