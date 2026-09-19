@@ -61,14 +61,26 @@
 > sandbox 模式（workspace-write 围栏写权限）+ approval（ask 策略，越权操作自动升级用户审批）。
 > 项目级红线事实声明见 `.dsh/profile.yaml` 的 security 段（注释态，供人参考）。
 
-## 开发环境访问（敏感信息 → credentials 受管）
-原 `01-开发环境.mdc` 的 GitLab/Confluence/开发库账号密码**不写入本契约**，已全量迁移至 DSH `credentials`（`~/.dsh/.credentials.yaml` refs，2026-08-25 用户决策"全量"）。
-访问约定（运行时经 credentials 解析引用，ref key 已登记）：
-- GitLab：仅 HTTP，Basic Auth，用户 wangbaikang，pass = `credential:GITLAB_PASSWORD`；克隆用 `git -c credential.helper= -c "http.extraHeader=Authorization: Basic <base64>"`
-- Confluence：代理 http://10.0.45.171，用户 wangbaikang@unicloud.com，pass = `credential:CONFLUENCE_PASSWORD`
-- 开发库 seasql：10.246.146.141:12369，用户 os_admin，pass = `credential:SEASQL_PASSWORD`；compute-core 测试 schema uni_compute_test
+## 开发环境访问（凭证走 credentials 受管，**取值一律不进契约**）
 
-> ⚠️ 这些凭证在本契约中仅保留"指向受管凭证"的占位，实际值经 `credentials.resolve` 运行时注入，不由规则文件明文存放。
+**本契约只规定"怎么取"，不记录"取什么"。** 主机、端口、账号、库名、schema 都是**项目事实**，
+写在这里就违反了本模式最基本的一条分工——**共享契约随 `.dsh/` 分发到每一个项目**，
+在里面写某一个项目的内网地址，等于把它复制给所有项目。
+
+Access 约定（通用，与本仓库/本项目无关）：
+
+1. **凭证本体一律不落规则文件**，经 DSH `credentials` 解析引用
+   （`~/.dsh/.credentials.yaml` 的 refs；2026-08-25 用户决策"全量"）。
+   规则文件里只允许出现 `credential:<KEY>` 这样的**引用**，不允许出现明文值。
+2. **主机 / 端口 / 账号 / schema 属于项目事实**，登记在**本项目的** `.dsh/profile.yaml`
+   （或本项目的 engineering skill）里——**不进共享契约**。
+3. **需要鉴权的克隆/调用，密码不写在命令行历史里**：用
+   `git -c credential.helper= -c "http.extraHeader=Authorization: Basic <base64>"`
+   这类一次性注入方式，`<base64>` 由 credentials 运行时解析得到。
+
+> ⚠️ 本契约中若出现任何具体主机名、IP、端口或账号，**那是缺陷，不是示例**——
+> 应当移到项目侧的 profile / engineering skill。判据：**删掉这一行，别的项目会不会受影响？**
+> 会 → 它属于共享契约；不会 → 它属于项目。
 
 ## 评分配方（通用方法论）
 | 区间 | 规则 | 示例 |

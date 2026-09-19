@@ -24,8 +24,12 @@
 - `tech_stack.package_layout`（若声明；QA 代码审计项按此检查）
 - `paths.source` / `paths.tests` / `paths.docs`
 
-> **本仓库（agent-mode）实际值**：`javascript`（Node ESM）+ `markdown` + `python`；`build: none`；`paths.source: tools/`。
-> **注意**：profile 中另附 Java 服务类项目的参考骨架（注释形式），供需要时取用。
+> **不要在本文件里找"本项目是什么"。** 本契约随 `.dsh/` 交付到每一个项目，
+> 因此**任何具体取值——技术栈、构建命令、目录、模块系统——都只可能来自
+> 目标项目自己的 `.dsh/profile.yaml`**。写在这里就是错的，哪怕是模式仓库自己的取值：
+> 那会让下一个项目读到上一个项目的技术栈，而且**不会报错**。
+> （2026-09-18 第八轮：本行原为「本仓库（agent-mode）实际值：javascript…build: none…」——
+> 那是模式仓库自身的事实，对消费项目毫无意义，已删除。）
 
 ## 编码规范（通用，所有技术栈适用）
 
