@@ -103,7 +103,7 @@ deploy:
   registry_data: "%LOCALAPPDATA%\\DshVscode"   # 生命周期仲裁数据与服务发现
 
 # 安全/约束红线 —— 2026-08-25 v2 起不再由引擎守卫读取（agile-dev-host 已删除）。
-# 红线改为契约规则：由 .dsh/contracts/_shared/engineering-baseline.md（分支管理）承载，
+# 红线改为契约规则：由 .dsh/contracts/_shared/engineering-rules.md（分支管理）承载，
 # 编排人格 + 角色契约要求模型遵守；工具层由 dsh 原生 sandbox 模式（workspace-write）
 # + approval（ask）兜底。下方结构保留为项目事实声明（供契约/人工作为依据），不再有代码读取：
 # security:
