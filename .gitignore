@@ -4,11 +4,19 @@ out/
 .npm-cache/
 .npm-userconfig
 .sim-tmp/
-# .dsh 敏捷模式足迹：仅共享 契约/项目skills/技术骨架，其余（tmp/reports/sshkey 等）保持忽略
+# .dsh 敏捷模式足迹：**只跟踪交付面**（2026-09-20 用户裁决统一纳入版本控制）。
+# 白名单形式（原有写法方向是对的，但漏了 README/.gitattributes/tools/tests）。
+# 继续被排除的：tmp/、reports/、以及根下的 sshkey-old.tmp 等机器遗留物 ——
+# 2026-09-03 那条"含明文密钥故不入库"的排除，只适用于这些非交付面。
 .dsh/*
-!.dsh/contracts/
-!.dsh/skills/
+!.dsh/.gitattributes
+!.dsh/README.md
 !.dsh/profile.yaml
+!.dsh/contracts/
+!.dsh/contracts-research/
+!.dsh/skills/
+!.dsh/tools/
+!.dsh/tests/
 .vscode/
 
 # 本地凭证层（DSH project-env，不入库）
