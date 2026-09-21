@@ -87,6 +87,15 @@ checks:
 # 部署骨架 —— 引擎据此生成打包/发布校验（非服务器部署，见 deploy-standard.md）
 deploy:
   kind: vscode-extension        # 分发物为 VSIX，非容器/服务
+  platform: none                # 无服务端/容器平台；分发介质是 VSIX 文件
+  orchestration: none           # 无 Jenkins/K8s/Helm；本机 `vsce package` + 手动安装
+  # 以下三键是 deploy-standard.md 的 Makefile 形状要求解析的占位符。
+  # 本项目**真值就是"不适用"**——据实填 none，而不是留空或删键：
+  # 留空会让契约里出现未解析的 `{{deploy.registry}}` 字面量（比填错更隐蔽）。
+  # 与 HelpDocToolkit / teamcodingknowledge / deepseek-harness-UI 三项目同一写法。
+  registry: none                # 无容器制品仓库（VSIX 不走 registry）
+  service: none                 # 非服务型应用（无长驻进程/服务名）
+  arch: none                    # 不做多架构镜像构建（VSIX 与架构无关）
   artifact: dsh-vscode-agent-*.vsix
   packager: vsce                # vsce package --no-dependencies
   publisher: dsh-vscode-agent
