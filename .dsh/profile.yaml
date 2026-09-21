@@ -22,6 +22,10 @@ paths:
   changelog: docs/CHANGELOG-设计文档.md   # 实测存在
   # 运行台账（每链闭环节追加一行；由 QA 契约「最小留存台账 P3c」引用）
   # 2026-09-19 迁移补键：新契约已含 {{paths.run_ledger}}，此前本文件没有该键。
+  # ⚠️ 2026-09-20 适配面核实：**该文件目前尚不存在**（实测 docs/ 下无 CHANGELOG-运行台账.md）。
+  #    据实声明路径（不是"已存在"），**首次链闭环时按契约新建**——不要当成已存在的文件去引用。
+  #    对照：同目录的 changelog（docs/CHANGELOG-设计文档.md）是实测存在的，
+  #    本条此前只写了"迁移补键"而没说文件状态，容易被下一个读者误当成已存在。
   run_ledger: docs/CHANGELOG-运行台账.md
   contracts: .dsh/contracts/
   skills: .dsh/skills/
@@ -74,6 +78,11 @@ tech_stack:
 # 与"构建"等价的本地校验入口（2026-09-19 迁移补键：新契约要求 checks，此前本文件缺）
 # 用途：把「怎么验证这个项目」写成可执行的单一入口，契约里不再出现项目命令字面量。
 checks:
+  # 2026-09-21 适配面核实并**据实声明**：全仓无 .eslintrc / eslint.config / biome.json /
+  #   .prettierrc / rustfmt.toml 等任一检查配置，也无 lint 脚本 ⇒ 写 none。
+  #   本项目此前**完全没有 checks.lint 这个键**（模板比对判缺）；写 none 比缺键好：
+  #   缺键会让读者分不清"没查过"还是"查过、确实没有"。
+  lint: none
   compile: npm run compile                # tsc -p ./ → out/（等价于构建）
   unit: node scripts/sim.mjs              # 纯 Node 无头生命周期验收（1500 行级，期望 8/8 PASS）
   package: npm run package                # vsce package → dsh-vscode-agent-*.vsix
