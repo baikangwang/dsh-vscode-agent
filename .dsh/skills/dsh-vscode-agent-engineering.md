@@ -4,7 +4,7 @@ description: dsh-vscode-agent 项目工程知识：模块分层、编译/测试�
 whenToUse: 在 dsh-vscode-agent 项目做开发/测试/打包/排障需要项目级工程上下文时。
 ---
 
-# dsh-vscode-agent-engineering — 项目级 skill（形态 C，按需加载）
+# dsh-vscode-agent-engineering — 项目级 skill（按需加载）
 
 > 属性：项目级（`.dsh/skills/` 官方发现根，cwd 选择 project roots）
 > 用途：低频、大体积、参考型工程项目知识；模型按需 `skill("dsh-vscode-agent-engineering")` 拉取。
@@ -187,5 +187,5 @@ npm run package                 # vsce package --no-dependencies → dsh-vscode-
 - 运行台账 → `docs/CHANGELOG-运行台账.md`（链级闭环时由编排者追加一行）
 - 编译/打包等构建配置 → `package.json` / `tsconfig.json` / `.vscodeignore`（开发专家）
 - 探针脚本与原始输出 → `.dsh/tmp/<role>/`（闭环清理）
-- > 注：共享契约引用的 `docs/06-设计文档写法指南.md` **在本工程不存在**——写法判据已随
-  > `design-doc-writing` skill 交付，该 skill 是本项目写法方面的完整判据来源。
+- > 注：写法判据的来源是 `design-doc-writing` skill（已随 `.dsh/skills/` 交付），
+  > 它是本项目写法方面的完整判据来源。

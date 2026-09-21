@@ -1,5 +1,5 @@
 # ============================================================
-# 敏捷模式（agile）— workspace 级声明式技术骨架（形态 A）
+# 敏捷模式（agile）— workspace 级声明式技术骨架
 # v2 起本文件不被任何引擎/插件组件读取；由敏捷模式编排人格（预设内建，
 #   非外部插件）在会话开始时按需读取，确认项目骨架（tech_stack/deploy）。
 # 新项目接入：在本 workspace 的 .dsh/ 下新建本文件即生效（零代码）。
@@ -13,19 +13,17 @@ meta:
   title: dsh-vscode-agent (TypeScript / VS Code Extension)
 
 # 路径骨架 —— 契约与 skill 中的 {{paths.*}} 占位符解析到此处。
-# **2026-09-18 新增**：契约里已出现 {{paths.tools}} / {{paths.changelog}} 等占位符，
-# 而本文件此前没有本节，解析不到会让路径退化成占位文本。换项目时改这里，不改契约。
+# 契约含 {{paths.tools}} / {{paths.changelog}} 等占位符，缺键会让路径退化成占位文本。
+# 换项目时改这里，不改契约。
 paths:
   source: src/
   tests: scripts/
   docs: docs/
   changelog: docs/CHANGELOG-设计文档.md   # 实测存在
-  # 运行台账（每链闭环节追加一行；由 QA 契约「最小留存台账 P3c」引用）
-  # 2026-09-19 迁移补键：新契约已含 {{paths.run_ledger}}，此前本文件没有该键。
-  # ⚠️ 2026-09-20 适配面核实：**该文件目前尚不存在**（实测 docs/ 下无 CHANGELOG-运行台账.md）。
-  #    据实声明路径（不是"已存在"），**首次链闭环时按契约新建**——不要当成已存在的文件去引用。
-  #    对照：同目录的 changelog（docs/CHANGELOG-设计文档.md）是实测存在的，
-  #    本条此前只写了"迁移补键"而没说文件状态，容易被下一个读者误当成已存在。
+  # 运行台账：每链闭环节追加一行；由 QA 契约「最小留存台账 P3c」引用。
+  # ⚠️ **该文件目前尚不存在**（docs/ 下无 CHANGELOG-运行台账.md）——不要当成已存在的文件
+  #    去引用；**首次链闭环时按契约新建**。
+  #    同目录的 changelog（docs/CHANGELOG-设计文档.md）是实测存在的。
   run_ledger: docs/CHANGELOG-运行台账.md
   contracts: .dsh/contracts/
   skills: .dsh/skills/
@@ -41,10 +39,9 @@ tech_stack:
     tool: tsc
     compile: npm run compile     # tsc -p ./ → out/
     package: npm run package     # vsce package → *.vsix
-  # 2026-09-19 迁移补键：deploy-standard 的 clean 目标会解析 {{tech_stack.clean}}。
-  # 本项目无独立清理命令（tsc 产物 out/ 由重新编译覆盖，不入库），据实填 none，
-  # 部署契约的 clean 目标据此判「不适用」，而不是要求一条不存在的命令。
-  # 位置与 agent-mode 正本一致（tech_stack 的直接子键），使占位符能精确解析。
+  # deploy-standard 的 clean 目标解析 {{tech_stack.clean}}。本项目无独立清理命令
+  # （tsc 产物 out/ 由重新编译覆盖，不入库），据实填 none，部署契约的 clean 目标据此判
+  # 「不适用」，而不是要求一条不存在的命令。本键须是 tech_stack 的直接子键，占位符才能精确解析。
   clean: none
   node: ">=20"
   test:
@@ -52,9 +49,7 @@ tech_stack:
     unit: node scripts/sim.mjs   # 纯 Node 无头生命周期验收
     gui: docs/联调测试剧本.md      # 需真实 VSCode 的 GUI 联调
   module_layout:               # 模块/依赖分层（QA 代码审计 C2 检查项）
-    # 2026-09-19 迁移订正：原列表停留在 6 文件期（列了已拆分的 webview.ts，漏了
-    # dshResolver/authProxy/channelProbe/channelSelect/launchInfo/panelMessages/
-    # webviewDetails/webviewHtml）。本次按「实际 import 'vscode' 与否」逐文件核对订正。
+    # src 逐文件按「实际 import 'vscode' 与否」核对得到。
     src:
       - extension.ts          # 激活/命令/配置/状态栏/生命周期钩子（vscode 耦合）
       - webview.ts            # 右侧边栏 iframe 面板（vscode 耦合）
@@ -75,24 +70,18 @@ tech_stack:
     - "vscode 耦合层（extension/webview/webviewDetails）仅经 runtime 订阅状态，不直连 dsh 进程"
   data_dir: "%LOCALAPPDATA%\\DshVscode"   # 实例注册表/锁/日志
 
-# 与"构建"等价的本地校验入口（2026-09-19 迁移补键：新契约要求 checks，此前本文件缺）
+# 与"构建"等价的本地校验入口
 # 用途：把「怎么验证这个项目」写成可执行的单一入口，契约里不再出现项目命令字面量。
 checks:
-  # 2026-09-21 适配面核实并**据实声明**：全仓无 .eslintrc / eslint.config / biome.json /
-  #   .prettierrc / rustfmt.toml 等任一检查配置，也无 lint 脚本 ⇒ 写 none。
-  #   本项目此前**完全没有 checks.lint 这个键**（模板比对判缺）；写 none 比缺键好：
-  #   缺键会让读者分不清"没查过"还是"查过、确实没有"。
+  # 全仓无 .eslintrc / eslint.config / biome.json / .prettierrc / rustfmt.toml 等任一检查配置，
+  # 也无 lint 脚本 ⇒ 写 none（不是缺键：缺键会让读者分不清"没查过"还是"查过、确实没有"）。
   lint: none
   compile: npm run compile                # tsc -p ./ → out/（等价于构建）
   unit: node scripts/sim.mjs              # 纯 Node 无头生命周期验收（1500 行级，期望 8/8 PASS）
   package: npm run package                # vsce package → dsh-vscode-agent-*.vsix
-  # 2026-09-20 订正：原写 `gate: none  # 本项目无对外质量闸门入口`，**该判断是错的**。
-  #   本项目有 `.dsh/tests/ref-integrity-check.mjs`（交付件自包含 + 契约引用不悬空 +
-  #   占位符可解析），它就是本项目的总闸，只是原先被登记在下面的 `contract_checks.ref_integrity`
-  #   这个**非标准键**下。后果：`design-standard.md:56` 要求「交付前须跑 `{{checks.gate}}` 并把
-  #   退出码附进交付说明」，`qa-common.md:127` 更把它列为**必须**（"缺它就等于交了闸门却没装门"）——
-  #   而 `{{checks.gate}}` 解析成字面量 `none`，等于交付说明里附了一个"没有闸门"。
-  #   9 个消费项目横向对比时，本项目是**唯一**一个 `gate: none`，其余 8 个都指向 ref-integrity-check。
+  # 本项目的总闸 = `.dsh/tests/ref-integrity-check.mjs`（交付件自包含 + 契约引用不悬空 +
+  #   占位符可解析）。`design-standard.md:56` 要求交付前跑 `{{checks.gate}}` 并把退出码附进
+  #   交付说明，`qa-common.md:127` 更把它列为必须——本键不得解析成字面量 `none`。
   gate: node .dsh/tests/ref-integrity-check.mjs   # 本项目总闸：交付件自包含 + 引用不悬空 + 占位符可解析
   contract_checks:                        # 交付件自检（随 .dsh/ 交付，任何消费项目都可跑）
     ref_integrity: node .dsh/tests/ref-integrity-check.mjs
@@ -127,7 +116,7 @@ deploy:
     - ignore: ".vscodeignore 打包排除（.vscode/src/scripts/node_modules/.npm-cache/docs/.dsh 等；out/ 必须入包）"
   registry_data: "%LOCALAPPDATA%\\DshVscode"   # 生命周期仲裁数据与服务发现
 
-# 安全/约束红线 —— 2026-08-25 v2 起不再由引擎守卫读取（agile-dev-host 已删除）。
+# 安全/约束红线 —— 不由引擎守卫读取（agile-dev-host 已删除）。
 # 红线改为契约规则：由 .dsh/contracts/_shared/engineering-rules.md（分支管理）承载，
 # 编排人格 + 角色契约要求模型遵守；工具层由 dsh 原生 sandbox 模式（workspace-write）
 # + approval（ask）兜底。下方结构保留为项目事实声明（供契约/人工作为依据），不再有代码读取：
