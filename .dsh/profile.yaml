@@ -77,7 +77,14 @@ checks:
   compile: npm run compile                # tsc -p ./ → out/（等价于构建）
   unit: node scripts/sim.mjs              # 纯 Node 无头生命周期验收（1500 行级，期望 8/8 PASS）
   package: npm run package                # vsce package → dsh-vscode-agent-*.vsix
-  gate: none                              # 本项目无对外质量闸门入口
+  # 2026-09-20 订正：原写 `gate: none  # 本项目无对外质量闸门入口`，**该判断是错的**。
+  #   本项目有 `.dsh/tests/ref-integrity-check.mjs`（交付件自包含 + 契约引用不悬空 +
+  #   占位符可解析），它就是本项目的总闸，只是原先被登记在下面的 `contract_checks.ref_integrity`
+  #   这个**非标准键**下。后果：`design-standard.md:56` 要求「交付前须跑 `{{checks.gate}}` 并把
+  #   退出码附进交付说明」，`qa-common.md:127` 更把它列为**必须**（"缺它就等于交了闸门却没装门"）——
+  #   而 `{{checks.gate}}` 解析成字面量 `none`，等于交付说明里附了一个"没有闸门"。
+  #   9 个消费项目横向对比时，本项目是**唯一**一个 `gate: none`，其余 8 个都指向 ref-integrity-check。
+  gate: node .dsh/tests/ref-integrity-check.mjs   # 本项目总闸：交付件自包含 + 引用不悬空 + 占位符可解析
   contract_checks:                        # 交付件自检（随 .dsh/ 交付，任何消费项目都可跑）
     ref_integrity: node .dsh/tests/ref-integrity-check.mjs
     profile_ref: node .dsh/tools/profile-ref-check.mjs
