@@ -149,15 +149,16 @@ npm run package                 # vsce package --no-dependencies → dsh-vscode-
 - 沙箱内 `npm install` 会被拒（写 `%LOCALAPPDATA%\npm-cache` EPERM + spawn 管道 EPERM）
   → 沙箱内用 `node node_modules\typescript\bin\tsc -p tsconfig.json` + 工作区 `.npm-cache`，如实记录环境差异。
 
-## 8. 历史坑清单（本工程实测教训）
-| # | 教训 | 规则 |
-|---|------|------|
-| 1 | 构建基线 | 普通终端为基线；DSH 沙箱内 `npm install` 会被拒 → 沙箱内用 `node tsc` + 工作区 `.npm-cache`，如实记录环境差异 |
-| 2 | 容器 id | VSCode 视图容器/命令 id 必须匹配 `^[a-z0-9_-]+$`（Bug A：`dsh.viewContainer` 含点号被拒）；location key 用 `secondarySidebar`（auxiliarybar 已改名） |
-| 3 | webview CSP | 须 `style-src 'unsafe-inline'; script-src 'unsafe-inline'` 放行 VSCode 注入（Bug C），否则面板无样式、卡 `initializing` |
-| 4 | 外部接管 pid | `adoptedPid` 必须持久化，否则注册表 `dsh.pid` 恒 null → 最后窗口不关停（Bug B） |
-| 5 | 防误杀 | 外部实例唯经 netstat + 命令行校验后接管；关停前三重复核，任一失败不杀（安全侧） |
-| 6 | 外网出口 | 本机直连外网常被断；外网操作须显式走本地代理；DSH 沙箱内 GCM 无法交互提示凭据 → push 前先在普通终端带同代理参数推/拉一次，缓存凭据 |
+## 8. 本工程特有的硬约束
+
+| # | 约束 | 违反后果 |
+|---|------|---------|
+| 1 | 构建以**普通终端**为基线；DSH 沙箱内 `npm install` 会被拒 → 沙箱内用 `node tsc` + 工作区 `.npm-cache`，并如实记录环境差异 | 沙箱内照搬普通终端命令，安装步骤直接失败 |
+| 2 | VSCode 视图容器/命令 id 必须匹配 `^[a-z0-9_-]+$`；location key 用 `secondarySidebar` | id 含点号等字符被拒（`dsh.viewContainer`）；`auxiliarybar` 已改名失效 |
+| 3 | webview 须放行 `style-src 'unsafe-inline'; script-src 'unsafe-inline'` 供 VSCode 注入 | 面板无样式，卡在 `initializing` |
+| 4 | `adoptedPid` 必须持久化 | 注册表 `dsh.pid` 恒 null → 最后窗口不关停 |
+| 5 | 外部实例唯经 netstat + 命令行校验后接管；关停前三重复核，任一失败不杀 | 误杀无关进程（安全侧） |
+| 6 | 外网操作须显式走本地代理；DSH 沙箱内 GCM 无法交互提示凭据 → push 前先在普通终端带同代理参数推/拉一次以缓存凭据 | 直连常被断；沙箱内 push 卡在凭据提示 |
 
 ## 9. 问题修复流程（本项目）
 ### 修复前 — 影响评估
